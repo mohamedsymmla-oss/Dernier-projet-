@@ -25,12 +25,12 @@ export async function mediaRoutes(app: FastifyInstance, ctx: AppContext) {
     const kindField = file.fields.kind as { value?: string } | undefined;
     const kind = parse(z.enum(['audio', 'image']), kindField?.value);
     const body = await file.toBuffer();
-    return media.publicMedia(await media.uploadMedia(ctx, { kind, filename: file.filename, mime: file.mimetype, body, userId: req.user!.id }));
+    return media.publicMediaWithUrl(ctx, await media.uploadMedia(ctx, { kind, filename: file.filename, mime: file.mimetype, body, userId: req.user!.id }));
   });
 
   app.post('/media/url', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req) => {
     const body = parse(z.object({ kind: z.enum(['audio', 'image']), url: z.string().url(), name: z.string().max(200).optional() }), req.body);
-    return media.publicMedia(await media.addMediaFromUrl(ctx, { ...body, userId: req.user!.id }));
+    return media.publicMediaWithUrl(ctx, await media.addMediaFromUrl(ctx, { ...body, userId: req.user!.id }));
   });
 
   app.get('/media/:id/url', async (req) => ({ url: await media.getMediaUrl(ctx, parse(idParam, req.params).id) }));
@@ -47,7 +47,7 @@ export async function mediaRoutes(app: FastifyInstance, ctx: AppContext) {
     return media.replaceMedia(ctx, id, newMediaId, req.user!.id);
   });
 
-  app.post('/media/:id/convert', async (req) => media.publicMedia(await media.convertToOggOpus(ctx, parse(idParam, req.params).id, req.user!.id)));
+  app.post('/media/:id/convert', async (req) => media.publicMediaWithUrl(ctx, await media.convertToOggOpus(ctx, parse(idParam, req.params).id, req.user!.id)));
 
   /** Tester : envoie ce média seul au numéro de test. */
   app.post('/media/:id/test', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req) => {

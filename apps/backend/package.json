@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "tsx watch --env-file-if-exists=../../.env src/main.ts",
     "build": "tsup",
     "start": "node dist/main.js",
-    "migrate": "tsx src/cli/migrate.ts",
+    "migrate": "tsx --env-file-if-exists=../../.env src/cli/migrate.ts",
     "migrate:prod": "node dist/migrate.js",
-    "create-user": "tsx src/cli/create-user.ts",
+    "create-user:prod": "node dist/create-user.js",
+    "create-user": "tsx --env-file-if-exists=../../.env src/cli/create-user.ts",
     "typecheck": "tsc --noEmit -p .",
     "test": "vitest run"
   },

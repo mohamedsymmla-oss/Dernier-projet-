@@ -113,13 +113,26 @@ export function publicMedia(m: any, usage?: string[]) {
   };
 }
 
+/** Média + URL de prévisualisation (URL publique, ou URL pré-signée temporaire pour un fichier importé). */
+export async function publicMediaWithUrl(ctx: AppContext, m: any, usage?: string[]) {
+  let previewUrl: string | null = null;
+  if (!m.deleted_at) {
+    try {
+      previewUrl = m.source === 'url' ? m.external_url : m.storage_key ? await ctx.storage.publicUrl(m.storage_key) : null;
+    } catch {
+      previewUrl = null;
+    }
+  }
+  return { ...publicMedia(m, usage), previewUrl };
+}
+
 export async function listMedia(ctx: AppContext, kind?: 'audio' | 'image') {
   const rows = await many(
     ctx.db,
     `SELECT * FROM media_assets WHERE deleted_at IS NULL ${kind ? 'AND kind=$1' : ''} ORDER BY created_at DESC`,
     kind ? [kind] : [],
   );
-  return Promise.all(rows.map(async (r) => publicMedia(r, (await mediaUsage(ctx, r.id)).usage)));
+  return Promise.all(rows.map(async (r) => publicMediaWithUrl(ctx, r, (await mediaUsage(ctx, r.id)).usage)));
 }
 
 export async function getMediaUrl(ctx: AppContext, id: string) {

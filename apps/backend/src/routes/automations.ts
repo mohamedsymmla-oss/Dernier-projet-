@@ -7,7 +7,7 @@ import { parse } from '../lib/validate.js';
 import { audit } from '../services/audit.js';
 import * as cfg from '../services/automation-config.js';
 import { listRecipients } from '../services/history.js';
-import { publicMedia } from '../services/media.js';
+import { publicMediaWithUrl } from '../services/media.js';
 import { applyPreset, deletePreset, listPresets, presetPayloadSchema, savePreset } from '../services/presets.js';
 import * as runs from '../services/runs.js';
 
@@ -17,7 +17,8 @@ const runParam = z.object({ id: z.string().uuid() });
 async function configView(ctx: AppContext, type: 'A1' | 'A2') {
   const c = await cfg.getConfig(ctx.db, type);
   const ids = [c.audio_media_id, ...c.photo_media_ids].filter(Boolean);
-  const media = new Map((await many(ctx.db, 'SELECT * FROM media_assets WHERE id = ANY($1::uuid[])', [ids])).map((m) => [m.id, publicMedia(m)]));
+  const rows = await many(ctx.db, 'SELECT * FROM media_assets WHERE id = ANY($1::uuid[])', [ids]);
+  const media = new Map(await Promise.all(rows.map(async (m) => [m.id, await publicMediaWithUrl(ctx, m)] as const)));
   const active = await one(
     ctx.db,
     `SELECT id FROM automation_runs WHERE automation_type=$1 AND kind='SEQUENCE' AND status IN ('RUNNING','PAUSED') LIMIT 1`,

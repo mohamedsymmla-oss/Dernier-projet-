@@ -1,4 +1,3 @@
-import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { signSendZenPayload } from '@wa/provider-connectors';
 import { buildApp } from '../src/app.js';
@@ -8,7 +7,7 @@ import { syncMissedEvents } from '../src/services/webhooks.js';
 import { closeDb, createTestEnv, drainRecipients, drainWebhooks, phones, seedA1Config, seedConnection, type TestEnv } from './helpers.js';
 
 let env: TestEnv;
-let app: FastifyInstance;
+let app: Awaited<ReturnType<typeof buildApp>>;
 let token: string;
 let conn: any;
 
