@@ -18,3 +18,7 @@ apps/mobile/android/local.properties
 apps/mobile/android/.gradle/
 *.iml
 .idea/
+
+# Fichiers binaires téléchargés localement (APK)
+livrables/
+*.apk
