@@ -1,0 +1,23 @@
+{
+  "name": "wa-automation",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Application privée d'automatisation WhatsApp Business (backend cloud + app Flutter)",
+  "workspaces": [
+    "packages/shared",
+    "packages/provider-connectors",
+    "apps/backend"
+  ],
+  "scripts": {
+    "build": "npm run build -w apps/backend",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "migrate": "npm run migrate -w apps/backend",
+    "dev": "npm run dev -w apps/backend",
+    "start": "npm run start -w apps/backend",
+    "create-user": "npm run create-user -w apps/backend"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
