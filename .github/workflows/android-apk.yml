@@ -8,12 +8,18 @@ on:
       backend_url:
         description: "URL du backend intégrée par défaut (modifiable ensuite dans l'application)"
         required: false
+      publish_branch:
+        description: "Déposer aussi l'APK sur la branche apk-builds (téléchargement via git)"
+        type: boolean
+        default: false
   push:
     tags: ['v*']
 
 jobs:
   apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: apps/mobile
@@ -55,3 +61,14 @@ jobs:
           name: wa-automation-apk
           path: apps/mobile/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+      - name: Déposer l'APK sur la branche apk-builds
+        if: github.event.inputs.publish_branch == 'true'
+        run: |
+          mkdir -p /tmp/apk && cp build/app/outputs/flutter-apk/app-release.apk /tmp/apk/WA-Automation.apk
+          cd /tmp/apk
+          git init -q -b apk-builds
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add WA-Automation.apk
+          git commit -q -m "APK ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" apk-builds
