@@ -83,6 +83,10 @@ flutter run -d chrome --dart-define=BACKEND_URL=http://localhost:3000
 5. Vérifiez : `https://xxx.up.railway.app/health` doit répondre `"status":"ok"`.
 
 Les migrations s’exécutent automatiquement au démarrage (verrou : sûr avec plusieurs instances).
+
+**Offre Railway gratuite (2 services maximum)** : sans service Redis, laissez `REDIS_URL` vide. L’image démarre
+alors un Redis local dans le conteneur. Aucune donnée n’est perdue au redémarrage : PostgreSQL reste la source
+de vérité et les files sont reconstruites automatiquement. Un vrai service Redis reste préférable dès que possible.
 Pour séparer API et workers : deux services avec `APP_ROLE=api` et `APP_ROLE=worker`.
 
 Toutes les variables : [.env.example](.env.example).
