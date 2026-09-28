@@ -134,8 +134,8 @@ Future<T?> _withProgress<T>(BuildContext context, String label, Future<T> Functi
 }
 
 /// Envoie le média seul au numéro de test et affiche le résultat réel.
-Future<void> testMediaOnTestNumber(BuildContext context, String mediaId) async {
-  final r = await runAction(context, () async => Map<String, dynamic>.from(await api.post('/media/$mediaId/test') as Map));
+Future<void> testMediaOnTestNumber(BuildContext context, String mediaId, [String channel = kProvider]) async {
+  final r = await runAction(context, () async => Map<String, dynamic>.from(await api.post(ch('/media/$mediaId/test', channel)) as Map));
   if (r == null || !context.mounted) return;
   await showDialog<void>(
     context: context,
@@ -167,8 +167,16 @@ String mediaSubtitle(Map m) {
 
 /// Zone audio d'une automatisation (Importer / URL, Lire, Tester, Remplacer, Supprimer).
 class AudioSlot extends StatelessWidget {
-  const AudioSlot({super.key, required this.title, required this.media, required this.onSet, this.voiceNoteSupported = false});
+  const AudioSlot({
+    super.key,
+    required this.title,
+    required this.media,
+    required this.onSet,
+    this.voiceNoteSupported = false,
+    this.channel = kProvider,
+  });
   final String title;
+  final String channel;
   final Map<String, dynamic>? media;
   final Future<void> Function(String? mediaId) onSet;
   final bool voiceNoteSupported;
@@ -210,6 +218,12 @@ class AudioSlot extends StatelessWidget {
               ]),
               const SizedBox(height: 8),
               AudioPreview(url: m['previewUrl'] as String?),
+              if (voiceNoteSupported)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text('Converti automatiquement en OGG/Opus et envoyé comme vrai message vocal WhatsApp.',
+                      style: Theme.of(context).textTheme.bodySmall),
+                ),
               if (!voiceNoteSupported)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
@@ -221,7 +235,8 @@ class AudioSlot extends StatelessWidget {
                 ),
               const SizedBox(height: 10),
               Wrap(spacing: 8, runSpacing: 8, children: [
-                BusyButton(label: 'Tester', icon: Icons.send_to_mobile, outlined: true, onPressed: () => testMediaOnTestNumber(context, m['id'] as String)),
+                BusyButton(
+                    label: 'Tester', icon: Icons.send_to_mobile, outlined: true, onPressed: () => testMediaOnTestNumber(context, m['id'] as String, channel)),
                 BusyButton(
                   label: 'Remplacer',
                   icon: Icons.swap_horiz,

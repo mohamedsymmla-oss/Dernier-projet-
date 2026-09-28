@@ -19,6 +19,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   String? _result;
   String? _mode;
   String? _provider;
+  String? _channel;
   DateTimeRange? _range;
   bool _includeTests = false;
   int _page = 1;
@@ -55,7 +56,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
           _drop('Résultat', _result, {'success': 'Succès', 'failure': 'Échec'}, (v) => _apply(() => _result = v)),
           _drop('Statut', _status, recipientStatusLabels, (v) => _apply(() => _status = v)),
           _drop('Mode', _mode, {'PRODUCTION': 'Production', 'TEST': 'Test'}, (v) => _apply(() => _mode = v)),
-          _drop('Fournisseur', _provider, {'sendzen': 'SendZen'}, (v) => _apply(() => _provider = v)),
+          _drop('Partie', _channel, {'PROVIDER': 'Fournisseur (API)', 'QR': 'WhatsApp QR'}, (v) => _apply(() => _channel = v)),
+          _drop('Fournisseur', _provider, {'sendzen': 'SendZen', 'qr': 'WhatsApp QR'}, (v) => _apply(() => _provider = v)),
           Padding(
             padding: const EdgeInsets.only(right: 6),
             child: ActionChip(
@@ -80,6 +82,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
             'result': _result,
             'mode': _mode,
             'provider': _provider,
+            'channel': _channel,
             'includeTests': _includeTests ? 'true' : null,
             'from': _range?.start.toUtc().toIso8601String(),
             'to': _range?.end.add(const Duration(days: 1)).toUtc().toIso8601String(),
@@ -152,7 +155,7 @@ class _RecipientCard extends StatelessWidget {
               Expanded(child: Text('${r['phone_e164']}', style: const TextStyle(fontWeight: FontWeight.w700))),
               StatusBadge(recipientStatusLabels[r['status']] ?? '${r['status']}', tone: toneForRecipient(r['status'] as String?), dense: true),
             ]),
-            Text('${r['automation_type'] == 'A1' ? 'Automation 1' : 'Automation 2'}'
+            Text('${r['automation_type'] == 'A1' ? 'Automation 1' : 'Automation 2'}${r['channel'] == 'QR' ? ' [QR]' : ''}'
                 '${r['run_kind'] == 'TEST' ? ' (test)' : r['run_kind'] == 'TEMPLATE' ? ' (modèle)' : ''} • ${r['mode']} • ${fmtDateTime(r['updated_at'])}',
                 style: Theme.of(context).textTheme.bodySmall),
             if (steps.isNotEmpty) ...[

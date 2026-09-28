@@ -126,7 +126,7 @@ function connectorParser(ctx: AppContext, conn: ConnectionRow | null): Pick<Prov
 export async function applyNormalizedEvent(
   ctx: AppContext,
   e: NormalizedEvent,
-  opts: { connectionId: string | null; webhookEventId: string | null },
+  opts: { connectionId: string | null; webhookEventId: string | null; provider?: string; channel?: 'PROVIDER' | 'QR' },
 ): Promise<boolean> {
   if (e.type === 'inbound_message') return applyInbound(ctx, e, opts);
   if (e.type === 'message_status') return applyStatus(ctx, e, opts);
@@ -136,7 +136,7 @@ export async function applyNormalizedEvent(
 async function applyInbound(
   ctx: AppContext,
   e: Extract<NormalizedEvent, { type: 'inbound_message' }>,
-  opts: { connectionId: string | null; webhookEventId: string | null },
+  opts: { connectionId: string | null; webhookEventId: string | null; provider?: string; channel?: 'PROVIDER' | 'QR' },
 ) {
   return withTx(ctx.db, async (tx) => {
     const contact = await one(
@@ -147,7 +147,7 @@ async function applyInbound(
     const ins = await tx.query(
       `INSERT INTO inbound_messages (provider, dedupe_key, provider_message_id, connection_id, webhook_event_id, contact_id,
           from_phone, to_phone_number_id, message_type, text, received_at, raw)
-       VALUES ('sendzen',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`,
+       VALUES ($12,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`,
       [
         e.dedupeKey,
         e.providerMessageId,
@@ -160,9 +160,26 @@ async function applyInbound(
         e.text,
         e.timestamp,
         JSON.stringify(e.raw ?? null),
+        opts.provider ?? 'sendzen',
       ],
     );
     if (ins.rowCount === 0) return false; // déjà reçu
+
+    if (opts.channel === 'QR') {
+      // Canal QR : statuts séparés. On ne touche pas aux colonnes du canal fournisseur.
+      await tx.query(
+        `INSERT INTO qr_contact_status (contact_id, last_inbound_at) VALUES ($1,$2)
+         ON CONFLICT (contact_id) DO UPDATE SET last_inbound_at = GREATEST(coalesce(qr_contact_status.last_inbound_at, $2), $2), updated_at=now()`,
+        [contact.id, e.timestamp],
+      );
+      await tx.query(
+        `UPDATE qr_contact_status SET responded_after_a1 = true, responded_after_a1_at = $2, responded_after_a1_message_id = $3,
+            responded_after_a1_message_type = $4
+          WHERE contact_id = $1 AND NOT responded_after_a1 AND a1_first_sent_at IS NOT NULL AND a1_first_sent_at < $2`,
+        [contact.id, e.timestamp, e.providerMessageId, e.messageType],
+      );
+      return true;
+    }
 
     await tx.query(
       `UPDATE contacts SET
@@ -202,13 +219,13 @@ const TS_COLUMN: Record<string, string> = { SENT: 'sent_at', DELIVERED: 'deliver
 async function applyStatus(
   ctx: AppContext,
   e: Extract<NormalizedEvent, { type: 'message_status' }>,
-  opts: { connectionId: string | null; webhookEventId: string | null },
+  opts: { connectionId: string | null; webhookEventId: string | null; provider?: string; channel?: 'PROVIDER' | 'QR' },
 ) {
   return withTx(ctx.db, async (tx) => {
     const ins = await tx.query(
       `INSERT INTO message_status_events (provider, dedupe_key, provider_message_id, status, occurred_at, error_code, error_message, webhook_event_id)
-       VALUES ('sendzen',$1,$2,$3,$4,$5,$6,$7) ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`,
-      [e.dedupeKey, e.providerMessageId, e.status, e.timestamp, e.errorCode, e.errorMessage, opts.webhookEventId],
+       VALUES ($8,$1,$2,$3,$4,$5,$6,$7) ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`,
+      [e.dedupeKey, e.providerMessageId, e.status, e.timestamp, e.errorCode, e.errorMessage, opts.webhookEventId, opts.provider ?? 'sendzen'],
     );
     if (ins.rowCount === 0) return false;
 
@@ -231,7 +248,7 @@ async function applyStatus(
         `UPDATE automation_recipients SET delivery_failed=true, last_error=$2, last_error_kind=$3, updated_at=now() WHERE id=$1`,
         [msg.recipient_id, `Échec de livraison : ${e.errorMessage ?? e.errorCode ?? 'inconnu'}`, kind ?? 'DELIVERY_FAILED'],
       );
-      if (kind === 'WINDOW_CLOSED' && msg.contact_id && !msg.is_test) {
+      if (kind === 'WINDOW_CLOSED' && msg.contact_id && !msg.is_test && opts.channel !== 'QR') {
         const r = await one(tx, 'SELECT automation_type FROM automation_recipients WHERE id=$1', [msg.recipient_id]);
         const p = r?.automation_type === 'A2' ? 'a2' : 'a1';
         await tx.query(`UPDATE contacts SET ${p}_status='TEMPLATE_REQUIRED', last_error=$2 WHERE id=$1`, [

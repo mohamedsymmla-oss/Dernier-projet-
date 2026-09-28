@@ -8,4 +8,6 @@ export interface JobScheduler {
   /** Automatisation 2 : un seul « tick » programmé à la fois, séquentiel. */
   scheduleA2Tick(runId: string, seq: number, delayMs: number): Promise<void>;
   enqueueWebhookEvent(eventId: string): Promise<void>;
+  /** Commandes de la session WhatsApp QR (exécutées par le worker qui détient le socket). */
+  enqueueQrControl?(action: 'start' | 'logout' | 'stop'): Promise<void>;
 }

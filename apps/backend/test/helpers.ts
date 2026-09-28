@@ -139,7 +139,7 @@ export async function seedMedia(env: TestEnv, kind: 'audio' | 'image', name: str
 
 export async function seedA1Config(env: TestEnv) {
   const audio = await seedMedia(env, 'audio', 'audio1.ogg');
-  await env.db.query(`UPDATE automation_configs SET audio_media_id=$1, text1='Bonjour 1', text2='Texte 2' WHERE automation_type='A1'`, [audio.id]);
+  await env.db.query(`UPDATE automation_configs SET audio_media_id=$1, text1='Bonjour 1', text2='Texte 2' WHERE automation_type='A1' AND channel='PROVIDER'`, [audio.id]);
   return { audio };
 }
 
@@ -148,7 +148,7 @@ export async function seedA2Config(env: TestEnv, photos = 3, delaySeconds = 10) 
   const imgs = [];
   for (let i = 0; i < photos; i++) imgs.push(await seedMedia(env, 'image', `photo${i + 1}.jpg`));
   await env.db.query(
-    `UPDATE automation_configs SET audio_media_id=$1, photo_media_ids=$2::uuid[], photo_count=$3, delay_between_contacts_seconds=$4 WHERE automation_type='A2'`,
+    `UPDATE automation_configs SET audio_media_id=$1, photo_media_ids=$2::uuid[], photo_count=$3, delay_between_contacts_seconds=$4 WHERE automation_type='A2' AND channel='PROVIDER'`,
     [audio.id, imgs.map((m) => m.id), photos, delaySeconds],
   );
   return { audio, imgs };

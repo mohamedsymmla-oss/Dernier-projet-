@@ -15,6 +15,7 @@ import 'screens/dashboard_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/logs_screen.dart';
+import 'screens/qr_connection_screen.dart';
 import 'screens/media_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/shell.dart';
@@ -57,6 +58,9 @@ class _WaAppState extends State<WaApp> {
           GoRoute(path: '/connexion', builder: (_, _) => const ConnectionScreen()),
           GoRoute(path: '/automation1', builder: (_, _) => const Automation1Screen()),
           GoRoute(path: '/automation2', builder: (_, _) => const Automation2Screen()),
+          GoRoute(path: '/qr/connexion', builder: (_, _) => const QrConnectionScreen()),
+          GoRoute(path: '/qr/automation1', builder: (_, _) => const Automation1Screen(key: ValueKey('qr-a1'), channel: kQr)),
+          GoRoute(path: '/qr/automation2', builder: (_, _) => const Automation2Screen(key: ValueKey('qr-a2'), channel: kQr)),
           GoRoute(path: '/contacts', builder: (_, _) => const ContactsScreen()),
           GoRoute(path: '/contacts/:id', builder: (_, s) => TimelineScreen(contactId: s.pathParameters['id']!)),
           GoRoute(path: '/medias', builder: (_, _) => const MediaScreen()),

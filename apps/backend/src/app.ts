@@ -13,6 +13,7 @@ import { connectionRoutes } from './routes/connections.js';
 import { contactRoutes } from './routes/contacts.js';
 import { mediaRoutes } from './routes/media.js';
 import { miscRoutes } from './routes/misc.js';
+import { qrRoutes } from './routes/qr.js';
 import { webhookRoutes } from './routes/webhooks.js';
 
 export async function buildApp(ctx: AppContext) {
@@ -80,6 +81,7 @@ export async function buildApp(ctx: AppContext) {
     await automationRoutes(priv, ctx);
     await mediaRoutes(priv, ctx);
     await miscRoutes(priv, ctx);
+    await qrRoutes(priv, ctx);
   });
   return app;
 }

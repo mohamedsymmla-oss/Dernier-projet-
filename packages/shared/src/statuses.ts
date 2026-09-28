@@ -85,3 +85,8 @@ export function formatDelay(seconds: number): string {
   const s = seconds % 60;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
+
+/** Canal d'envoi : fournisseur officiel (SendZen) ou WhatsApp lié par QR code (Baileys). Données séparées. */
+export const CHANNELS = ['PROVIDER', 'QR'] as const;
+export type Channel = (typeof CHANNELS)[number];
+export const CHANNEL_LABELS: Record<Channel, string> = { PROVIDER: 'Fournisseur (API)', QR: 'WhatsApp QR' };

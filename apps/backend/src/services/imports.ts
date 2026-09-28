@@ -1,4 +1,4 @@
-import { analyzePhoneList, type AutomationType } from '@wa/shared';
+import { analyzePhoneList, type AutomationType, type Channel } from '@wa/shared';
 import { many, one, withTx } from '../db/pool.js';
 import type { AppContext } from '../context.js';
 import { badRequest, notFound } from '../lib/errors.js';
@@ -15,8 +15,10 @@ export async function createImport(
     filename?: string | null;
     defaultCountry?: string | null;
     userId?: string | null;
+    channel?: Channel;
   },
 ) {
+  const channel: Channel = input.channel ?? 'PROVIDER';
   if (Buffer.byteLength(input.content, 'utf8') > MAX_IMPORT_BYTES) throw badRequest('Fichier trop volumineux (5 Mo maximum)');
   const settings = await one(ctx.db, 'SELECT default_country FROM app_settings WHERE id=1');
   const country = (input.defaultCountry || settings?.default_country || '').toUpperCase() || undefined;
@@ -28,8 +30,8 @@ export async function createImport(
     const imp = await one(
       tx,
       `INSERT INTO contact_imports (automation_type, source, filename, default_country, total_lines, valid_count,
-          invalid_count, duplicate_count, empty_count, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+          invalid_count, duplicate_count, empty_count, created_by, channel)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
       [
         input.automationType,
         input.source,
@@ -41,6 +43,7 @@ export async function createImport(
         count('DUPLICATE_IN_LIST'),
         count('EMPTY'),
         input.userId ?? null,
+        channel,
       ],
     );
     const id = imp!.id as string;
@@ -77,19 +80,22 @@ export async function createImport(
   return analyzeImport(ctx, importId, input.automationType);
 }
 
-/** Crée une liste Automation 2 à partir des personnes ayant répondu après Automation 1 (notre base). */
-export async function createRespondersImport(ctx: AppContext, userId?: string | null) {
+/** Crée une liste Automation 2 à partir des personnes ayant répondu après Automation 1 (notre base, par canal). */
+export async function createRespondersImport(ctx: AppContext, userId?: string | null, channel: Channel = 'PROVIDER') {
   const rows = await many(
     ctx.db,
-    `SELECT id, phone_e164 FROM contacts WHERE responded_after_a1 ORDER BY responded_after_a1_at`,
+    channel === 'QR'
+      ? `SELECT c.id, c.phone_e164 FROM qr_contact_status q JOIN contacts c ON c.id=q.contact_id
+          WHERE q.responded_after_a1 ORDER BY q.responded_after_a1_at`
+      : `SELECT id, phone_e164 FROM contacts WHERE responded_after_a1 ORDER BY responded_after_a1_at`,
   );
   if (rows.length === 0) throw badRequest("Aucune réponse après Automation 1 n'a encore été enregistrée");
   const id = await withTx(ctx.db, async (tx) => {
     const imp = await one(
       tx,
-      `INSERT INTO contact_imports (automation_type, source, total_lines, valid_count, created_by)
-       VALUES ('A2','responders',$1,$1,$2) RETURNING id`,
-      [rows.length, userId ?? null],
+      `INSERT INTO contact_imports (automation_type, source, total_lines, valid_count, created_by, channel)
+       VALUES ('A2','responders',$1,$1,$2,$3) RETURNING id`,
+      [rows.length, userId ?? null, channel],
     );
     await tx.query(
       `INSERT INTO contact_import_items (import_id, line_number, raw_value, status, phone_e164, contact_id)
@@ -109,10 +115,14 @@ export async function analyzeImport(ctx: AppContext, importId: string, type: Aut
   const imp = await one(ctx.db, 'SELECT * FROM contact_imports WHERE id=$1', [importId]);
   if (!imp) throw notFound('Import');
   const t = (type ?? imp.automation_type) as AutomationType | null;
-  const conn = await one(
-    ctx.db,
-    'SELECT c.mode FROM app_settings s LEFT JOIN provider_connections c ON c.id=s.active_connection_id WHERE s.id=1',
-  );
+  const channel = imp.channel as Channel;
+  const conn =
+    channel === 'QR'
+      ? { mode: 'PRODUCTION' }
+      : await one(
+          ctx.db,
+          'SELECT c.mode FROM app_settings s LEFT JOIN provider_connections c ON c.id=s.active_connection_id WHERE s.id=1',
+        );
   const mode = conn?.mode ?? 'PRODUCTION';
 
   let already: any[] = [];
@@ -125,13 +135,16 @@ export async function analyzeImport(ctx: AppContext, importId: string, type: Aut
          JOIN automation_recipients r ON r.idempotency_key = $2 || i.contact_id::text
         WHERE i.import_id=$1 AND i.status='VALID' AND r.status = ANY($3)
         ORDER BY i.line_number`,
-      [importId, idempotencyKey(mode, 'SEQUENCE', t, ''), OCCUPYING_STATUSES],
+      [importId, idempotencyKey(mode, 'SEQUENCE', t, '', channel), OCCUPYING_STATUSES],
     );
     if (t === 'A2') {
       const r = await one(
         ctx.db,
-        `SELECT count(*)::int AS n FROM contact_import_items i JOIN contacts c ON c.id=i.contact_id
-          WHERE i.import_id=$1 AND i.status='VALID' AND NOT c.responded_after_a1`,
+        channel === 'QR'
+          ? `SELECT count(*)::int AS n FROM contact_import_items i LEFT JOIN qr_contact_status q ON q.contact_id=i.contact_id
+              WHERE i.import_id=$1 AND i.status='VALID' AND NOT coalesce(q.responded_after_a1, false)`
+          : `SELECT count(*)::int AS n FROM contact_import_items i JOIN contacts c ON c.id=i.contact_id
+              WHERE i.import_id=$1 AND i.status='VALID' AND NOT c.responded_after_a1`,
         [importId],
       );
       notResponded = r?.n ?? 0;
@@ -149,6 +162,7 @@ export async function analyzeImport(ctx: AppContext, importId: string, type: Aut
   return {
     importId,
     automationType: t,
+    channel,
     mode,
     source: imp.source,
     filename: imp.filename,

@@ -21,6 +21,8 @@ export function createConnector(
   switch (provider) {
     case 'sendzen':
       return new SendZenConnector(creds, opts);
+    case 'qr':
+      throw new Error('Le canal QR est fourni par le backend (session Baileys), pas par ce registre');
     default:
       throw new Error(`Fournisseur non pris en charge : ${provider as string}`);
   }

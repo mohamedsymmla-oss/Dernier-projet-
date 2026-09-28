@@ -28,6 +28,12 @@ class TimelineScreen extends StatelessWidget {
               InfoRow('Réponse après A1', c['responded_after_a1'] == true ? 'Oui — ${fmtDateTime(c['responded_after_a1_at'])} (${c['responded_after_a1_message_type']})' : 'Non'),
               InfoRow('Automation 2', '${recipientStatusLabels[c['a2_status']] ?? '—'} ${c['a2_first_sent_at'] != null ? '(envoyée le ${fmtDateTime(c['a2_first_sent_at'])})' : ''}'),
               if (c['last_error'] != null) InfoRow('Dernière erreur', '${c['last_error']}', copyable: true),
+              if (d['qrStatus'] != null) ...[
+                const Divider(),
+                InfoRow('QR · Automation 1', recipientStatusLabels[(d['qrStatus'] as Map)['a1_status']] ?? '—'),
+                InfoRow('QR · réponse après A1', (d['qrStatus'] as Map)['responded_after_a1'] == true ? 'Oui — ${fmtDateTime((d['qrStatus'] as Map)['responded_after_a1_at'])}' : 'Non'),
+                InfoRow('QR · Automation 2', recipientStatusLabels[(d['qrStatus'] as Map)['a2_status']] ?? '—'),
+              ],
             ]),
           ),
           SectionCard(

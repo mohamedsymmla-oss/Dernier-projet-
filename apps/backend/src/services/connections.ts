@@ -56,7 +56,8 @@ export function publicConnection(ctx: AppContext, c: any, isActive = false) {
 
 export async function listConnections(ctx: AppContext) {
   const s = await one(ctx.db, 'SELECT active_connection_id FROM app_settings WHERE id=1');
-  const rows = await many(ctx.db, 'SELECT * FROM provider_connections ORDER BY created_at DESC');
+  // La connexion WhatsApp QR a son propre écran : elle n'apparaît jamais parmi les connexions fournisseur.
+  const rows = await many(ctx.db, `SELECT * FROM provider_connections WHERE provider <> 'qr' ORDER BY created_at DESC`);
   return rows.map((r) => publicConnection(ctx, r, r.id === s?.active_connection_id));
 }
 
@@ -361,17 +362,24 @@ export async function sendDirectTest(
      VALUES ($1,$2,$3,$4,$5,true,'SUBMITTING',now()) RETURNING id`,
     [conn.id, conn.provider, contact.id, n.e164, item.kind],
   );
+  const connector = ctx.connectorFor(conn);
+  const voice = msg.kind === 'audio' && connector.capabilities().sendVoiceNote.status === 'SUPPORTED';
   try {
-    const res = await ctx.connectorFor(conn).send(
+    const res = await connector.send(
       { phoneNumber: conn.phone_number ?? '', phoneNumberId: conn.phone_number_id ?? '', wabaId: conn.waba_id ?? '' },
       n.e164,
-      msg,
+      voice && msg.kind === 'audio' ? { ...msg, asVoiceNote: true } : msg,
     );
     await ctx.db.query(
       `UPDATE outbound_messages SET status='ACCEPTED', provider_message_id=$2, http_status=$3, request_id=$4, accepted_at=now() WHERE id=$1`,
       [o!.id, res.providerMessageId, res.httpStatus, res.requestId],
     );
-    return { ok: true, providerMessageId: res.providerMessageId, outboundId: o!.id, deliveredAs: item.kind === 'audio' ? 'Audio standard' : item.kind };
+    return {
+      ok: true,
+      providerMessageId: res.providerMessageId,
+      outboundId: o!.id,
+      deliveredAs: item.kind === 'audio' ? (voice ? 'Message vocal' : 'Audio standard') : item.kind,
+    };
   } catch (e) {
     const pe = toProviderError(e);
     await ctx.db.query(

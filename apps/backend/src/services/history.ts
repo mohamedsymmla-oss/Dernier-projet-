@@ -11,6 +11,7 @@ export interface HistoryFilters {
   to?: string;
   provider?: string;
   mode?: 'PRODUCTION' | 'TEST';
+  channel?: 'PROVIDER' | 'QR';
   includeTests?: boolean;
   runId?: string;
   page?: number;
@@ -34,6 +35,7 @@ export async function listRecipients(ctx: AppContext, f: HistoryFilters) {
   if (f.provider) add('c.provider = ?', f.provider);
   if (f.mode) add('run.mode = ?', f.mode);
   if (f.runId) add('r.run_id = ?', f.runId);
+  if (f.channel && !f.runId) add('run.channel = ?', f.channel);
   if (!f.includeTests && !f.runId) where.push(`run.kind <> 'TEST'`);
   const pageSize = Math.min(200, f.pageSize ?? 50);
   const page = Math.max(1, f.page ?? 1);
@@ -42,7 +44,7 @@ export async function listRecipients(ctx: AppContext, f: HistoryFilters) {
     ctx.db,
     `SELECT r.id, r.run_id, r.contact_id, r.phone_e164, r.automation_type, r.status, r.position, r.delivery_failed,
             r.last_error, r.last_error_kind, r.started_at, r.completed_at, r.created_at, r.updated_at,
-            run.kind AS run_kind, run.mode, c.provider,
+            run.kind AS run_kind, run.mode, run.channel, c.provider,
             (SELECT json_agg(json_build_object('label', s.label, 'kind', s.kind, 'status', s.status,
                  'messageStatus', o.status, 'attempts', s.attempts, 'error', s.last_error) ORDER BY s.step_index)
                FROM automation_steps s LEFT JOIN outbound_messages o ON o.id = s.outbound_message_id
@@ -68,6 +70,7 @@ export async function listRecipients(ctx: AppContext, f: HistoryFilters) {
 export async function contactTimeline(ctx: AppContext, contactId: string) {
   const contact = await one(ctx.db, 'SELECT * FROM contacts WHERE id=$1', [contactId]);
   if (!contact) throw notFound('Contact');
+  const qrStatus = await one(ctx.db, 'SELECT * FROM qr_contact_status WHERE contact_id=$1', [contactId]);
   const events: Array<{ at: Date; type: string; label: string; detail?: string | null; status?: string; automation?: string }> = [];
 
   const imports = await many(
@@ -80,13 +83,14 @@ export async function contactTimeline(ctx: AppContext, contactId: string) {
 
   const outs = await many(
     ctx.db,
-    `SELECT o.*, s.label AS step_label, r.automation_type FROM outbound_messages o
+    `SELECT o.*, s.label AS step_label, r.automation_type, pc.provider AS conn_provider FROM outbound_messages o
+       JOIN provider_connections pc ON pc.id=o.connection_id
        LEFT JOIN automation_steps s ON s.id=o.step_id LEFT JOIN automation_recipients r ON r.id=o.recipient_id
       WHERE o.contact_id=$1 ORDER BY o.created_at`,
     [contactId],
   );
   for (const o of outs) {
-    const name = (o.step_label ?? o.kind) + (o.is_test ? ' (test)' : '');
+    const name = (o.step_label ?? o.kind) + (o.conn_provider === 'qr' ? ' [QR]' : '') + (o.is_test ? ' (test)' : '');
     const auto = o.automation_type ?? undefined;
     if (o.submitted_at) events.push({ at: o.submitted_at, type: 'submitted', label: `${name} soumis`, automation: auto, detail: `tentative ${o.attempt}` });
     if (o.accepted_at) events.push({ at: o.accepted_at, type: 'accepted', label: `${name} accepté par l'API`, automation: auto, detail: o.provider_message_id });
@@ -96,7 +100,7 @@ export async function contactTimeline(ctx: AppContext, contactId: string) {
     if (o.failed_at) events.push({ at: o.failed_at, type: 'failed', label: `${name} en échec`, automation: auto, detail: o.error_message, status: 'error' });
   }
   const ins = await many(ctx.db, 'SELECT * FROM inbound_messages WHERE contact_id=$1 ORDER BY received_at', [contactId]);
-  for (const m of ins) events.push({ at: m.received_at, type: 'inbound', label: 'Client a répondu', detail: `${m.message_type}${m.text ? ' : ' + m.text.slice(0, 120) : ''}` });
+  for (const m of ins) events.push({ at: m.received_at, type: 'inbound', label: m.provider === 'qr' ? 'Client a répondu [QR]' : 'Client a répondu', detail: `${m.message_type}${m.text ? ' : ' + m.text.slice(0, 120) : ''}` });
 
   const recs = await many(
     ctx.db,
@@ -106,10 +110,10 @@ export async function contactTimeline(ctx: AppContext, contactId: string) {
   for (const r of recs) {
     if (r.status === 'TEMPLATE_REQUIRED') events.push({ at: r.updated_at, type: 'template_required', label: 'Modèle WhatsApp requis', detail: r.last_error, automation: r.automation_type, status: 'warning' });
     if (r.status === 'NEEDS_REVIEW') events.push({ at: r.updated_at, type: 'needs_review', label: 'Vérification requise', detail: r.last_error, automation: r.automation_type, status: 'warning' });
-    if (r.status === 'COMPLETED' && r.completed_at) events.push({ at: r.completed_at, type: 'completed', label: `${r.automation_type === 'A1' ? 'Automation 1' : 'Automation 2'} terminée${r.kind === 'TEST' ? ' (test)' : ''}`, automation: r.automation_type });
+    if (r.status === 'COMPLETED' && r.completed_at) events.push({ at: r.completed_at, type: 'completed', label: `${r.automation_type === 'A1' ? 'Automation 1' : 'Automation 2'}${r.channel === 'QR' ? ' [QR]' : ''} terminée${r.kind === 'TEST' ? ' (test)' : ''}`, automation: r.automation_type });
   }
   events.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
-  return { contact, events, recipients: recs };
+  return { contact, qrStatus, events, recipients: recs };
 }
 
 export async function listContacts(ctx: AppContext, q: { q?: string; filter?: string; page?: number; pageSize?: number }) {
@@ -117,22 +121,31 @@ export async function listContacts(ctx: AppContext, q: { q?: string; filter?: st
   const p: unknown[] = [];
   if (q.q) {
     p.push(q.q.replace(/[^\d+]/g, ''));
-    where.push(`phone_e164 LIKE '%' || $${p.length} || '%'`);
+    where.push(`c.phone_e164 LIKE '%' || $${p.length} || '%'`);
   }
   const filters: Record<string, string> = {
-    responded: 'responded_after_a1',
-    a1_done: `a1_status='COMPLETED'`,
-    a1_none: `a1_status='NONE'`,
-    a2_done: `a2_status='COMPLETED'`,
-    template_required: `(a1_status='TEMPLATE_REQUIRED' OR a2_status='TEMPLATE_REQUIRED')`,
-    errors: 'last_error IS NOT NULL',
+    responded: 'c.responded_after_a1',
+    a1_done: `c.a1_status='COMPLETED'`,
+    a1_none: `c.a1_status='NONE'`,
+    a2_done: `c.a2_status='COMPLETED'`,
+    template_required: `(c.a1_status='TEMPLATE_REQUIRED' OR c.a2_status='TEMPLATE_REQUIRED')`,
+    errors: 'c.last_error IS NOT NULL',
+    qr_responded: 'q.responded_after_a1',
+    qr_a1_done: `q.a1_status='COMPLETED'`,
+    qr_a2_done: `q.a2_status='COMPLETED'`,
   };
   if (q.filter && filters[q.filter]) where.push(filters[q.filter]!);
   const pageSize = Math.min(200, q.pageSize ?? 50);
   const page = Math.max(1, q.page ?? 1);
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
-  const items = await many(ctx.db, `SELECT * FROM contacts ${w} ORDER BY updated_at DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, p);
-  const total = await one(ctx.db, `SELECT count(*)::int AS n FROM contacts ${w}`, p);
+  const items = await many(
+    ctx.db,
+    `SELECT c.*, q.a1_status AS qr_a1_status, q.a2_status AS qr_a2_status, coalesce(q.responded_after_a1, false) AS qr_responded_after_a1
+       FROM contacts c LEFT JOIN qr_contact_status q ON q.contact_id = c.id
+       ${w} ORDER BY c.updated_at DESC LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+    p,
+  );
+  const total = await one(ctx.db, `SELECT count(*)::int AS n FROM contacts c LEFT JOIN qr_contact_status q ON q.contact_id = c.id ${w}`, p);
   return { items, total: total?.n ?? 0, page, pageSize };
 }
 
@@ -145,13 +158,16 @@ export async function dashboard(ctx: AppContext) {
     ctx.db,
     `SELECT count(*) FILTER (WHERE r.status='COMPLETED')::int AS completed, count(*)::int AS total
        FROM automation_recipients r JOIN automation_runs run ON run.id=r.run_id
-      WHERE r.automation_type='A1' AND run.kind='SEQUENCE' AND run.mode=coalesce($1,'PRODUCTION')`,
+      WHERE r.automation_type='A1' AND run.kind='SEQUENCE' AND run.channel='PROVIDER' AND run.mode=coalesce($1,'PRODUCTION')`,
     [conn?.mode ?? null],
   );
-  const activeRuns = await many(ctx.db, `SELECT id, automation_type, kind, status FROM automation_runs WHERE status IN ('RUNNING','PAUSED') AND kind <> 'TEST'`);
+  const activeRuns = await many(
+    ctx.db,
+    `SELECT id, automation_type, kind, status, channel, pause_reason FROM automation_runs WHERE status IN ('RUNNING','PAUSED') AND kind <> 'TEST'`,
+  );
   const a2Run = await one(
     ctx.db,
-    `SELECT id, status, total FROM automation_runs WHERE automation_type='A2' AND kind='SEQUENCE' ORDER BY created_at DESC LIMIT 1`,
+    `SELECT id, status, total FROM automation_runs WHERE automation_type='A2' AND kind='SEQUENCE' AND channel='PROVIDER' ORDER BY created_at DESC LIMIT 1`,
   );
   let a2 = null;
   if (a2Run) {
@@ -169,6 +185,13 @@ export async function dashboard(ctx: AppContext) {
       WHERE run.kind <> 'TEST' AND (r.status IN ('FAILED','TEMPLATE_REQUIRED','NEEDS_REVIEW') OR r.delivery_failed)`,
   );
   const responses = await one(ctx.db, 'SELECT count(*)::int AS n FROM contacts WHERE responded_after_a1');
+  const qrSession = await one(ctx.db, 'SELECT status, phone_number, last_error, disconnected_at, paired_at FROM qr_sessions ORDER BY created_at LIMIT 1');
+  const qrSettings = await one(ctx.db, 'SELECT emergency_stopped, emergency_reason FROM qr_settings WHERE id=1');
+  const qrCounts = await one(
+    ctx.db,
+    `SELECT count(*) FILTER (WHERE a1_status='COMPLETED')::int AS a1, count(*) FILTER (WHERE a2_status='COMPLETED')::int AS a2,
+            count(*) FILTER (WHERE responded_after_a1)::int AS responses FROM qr_contact_status`,
+  );
   const recentActivity = await many(
     ctx.db,
     `SELECT action, entity_type, entity_id, details, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 10`,
@@ -197,6 +220,17 @@ export async function dashboard(ctx: AppContext) {
     automation2: a2,
     failures: failures?.n ?? 0,
     responses: responses?.n ?? 0,
+    qr: {
+      status: qrSession?.status ?? 'NOT_CONFIGURED',
+      phoneNumber: qrSession?.phone_number ?? null,
+      lastError: qrSession?.last_error ?? null,
+      disconnectedAt: qrSession?.disconnected_at ?? null,
+      emergencyStopped: !!qrSettings?.emergency_stopped,
+      emergencyReason: qrSettings?.emergency_reason ?? null,
+      automation1Completed: qrCounts?.a1 ?? 0,
+      automation2Completed: qrCounts?.a2 ?? 0,
+      responses: qrCounts?.responses ?? 0,
+    },
     activeRuns,
     recentActivity,
     recentErrors,

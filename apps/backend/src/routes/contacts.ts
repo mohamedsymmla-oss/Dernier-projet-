@@ -15,13 +15,17 @@ export async function contactRoutes(app: FastifyInstance, ctx: AppContext) {
         content: z.string().min(1),
         filename: z.string().max(200).optional().nullable(),
         defaultCountry: z.string().length(2).optional().nullable(),
+        channel: z.enum(['PROVIDER', 'QR']).default('PROVIDER'),
       }),
       req.body,
     );
     return createImport(ctx, { ...body, userId: req.user!.id });
   });
 
-  app.post('/imports/responders', async (req) => createRespondersImport(ctx, req.user!.id));
+  app.post('/imports/responders', async (req) => {
+    const { channel } = parse(z.object({ channel: z.enum(['PROVIDER', 'QR']).default('PROVIDER') }), req.body ?? {});
+    return createRespondersImport(ctx, req.user!.id, channel);
+  });
 
   app.get('/imports/:id/analysis', async (req) => {
     const { id } = parse(z.object({ id: z.string().uuid() }), req.params);

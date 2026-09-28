@@ -27,6 +27,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
     'a2_done': 'A2 terminée',
     'template_required': 'Modèle requis',
     'errors': 'Avec erreur',
+    'qr_responded': 'QR : ont répondu',
+    'qr_a1_done': 'QR : A1 terminée',
+    'qr_a2_done': 'QR : A2 terminée',
   };
 
   @override
@@ -95,6 +98,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
                         _auto('A1', c['a1_status'] as String),
                         _auto('A2', c['a2_status'] as String),
                         if (c['responded_after_a1'] == true) const StatusBadge('A répondu', tone: Tone.ok, icon: Icons.reply, dense: true),
+                        if ((c['qr_a1_status'] ?? 'NONE') != 'NONE') _auto('QR A1', c['qr_a1_status'] as String),
+                        if ((c['qr_a2_status'] ?? 'NONE') != 'NONE') _auto('QR A2', c['qr_a2_status'] as String),
+                        if (c['qr_responded_after_a1'] == true) const StatusBadge('A répondu (QR)', tone: Tone.ok, icon: Icons.reply, dense: true),
                       ]),
                     ),
                   ),

@@ -17,6 +17,9 @@ const navItems = [
   NavItem('/connexion', 'Connexion WhatsApp', Icons.link),
   NavItem('/automation1', 'Automation 1', Icons.looks_one_outlined),
   NavItem('/automation2', 'Automation 2', Icons.looks_two_outlined),
+  NavItem('/qr/connexion', 'Connexion QR', Icons.qr_code_2),
+  NavItem('/qr/automation1', 'QR · Automation 1', Icons.filter_1),
+  NavItem('/qr/automation2', 'QR · Automation 2', Icons.filter_2),
   NavItem('/contacts', 'Contacts', Icons.people_outline),
   NavItem('/medias', 'Médias', Icons.perm_media_outlined),
   NavItem('/historique', 'Historique', Icons.history),
@@ -31,8 +34,16 @@ class AppShell extends StatelessWidget {
   final Widget child;
 
   int get _index {
-    final i = navItems.indexWhere((n) => n.path != '/' && location.startsWith(n.path));
-    return i < 0 ? 0 : i;
+    var best = 0;
+    var bestLen = 0;
+    for (var i = 0; i < navItems.length; i++) {
+      final p = navItems[i].path;
+      if (p != '/' && location.startsWith(p) && p.length > bestLen) {
+        best = i;
+        bestLen = p.length;
+      }
+    }
+    return best;
   }
 
   @override
@@ -50,7 +61,16 @@ class AppShell extends StatelessWidget {
           )
         : null;
 
-    final body = Column(children: [?banner, Expanded(child: child)]);
+    final qrAlert = state.qrAlert;
+    final qrBanner = qrAlert == null
+        ? null
+        : MaterialBanner(
+            backgroundColor: StatusColors.error.withValues(alpha: 0.12),
+            leading: const Icon(Icons.qr_code_2, color: StatusColors.error),
+            content: Text(qrAlert, style: const TextStyle(fontWeight: FontWeight.w700)),
+            actions: [TextButton(onPressed: () => context.go('/qr/connexion'), child: const Text('Ouvrir'))],
+          );
+    final body = Column(children: [?banner, ?qrBanner, Expanded(child: child)]);
 
     if (wide) {
       return Scaffold(

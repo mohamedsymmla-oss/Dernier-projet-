@@ -255,7 +255,7 @@ describe('Conformité : fenêtre de 24 h', () => {
   });
 
   it('politique stricte : fenêtre inconnue → modèle requis', async () => {
-    await env.db.query(`UPDATE automation_configs SET window_policy='REQUIRE_KNOWN' WHERE automation_type='A1'`);
+    await env.db.query(`UPDATE automation_configs SET window_policy='REQUIRE_KNOWN' WHERE automation_type='A1' AND channel='PROVIDER'`);
     await startA1(phones(1));
     await drainRecipients(env);
     expect(env.fake.sends).toHaveLength(0);
