@@ -126,3 +126,13 @@ class ApiClient {
 }
 
 final api = ApiClient.instance;
+
+/// Canal d'envoi : 'PROVIDER' (fournisseur officiel, comportement historique) ou 'QR' (WhatsApp lié par QR code).
+const kProvider = 'PROVIDER';
+const kQr = 'QR';
+
+/// Ajoute ?channel=QR aux routes d'automatisation pour le canal QR (le fournisseur reste la valeur par défaut).
+String ch(String path, String channel) {
+  if (channel != kQr) return path;
+  return path.contains('?') ? '$path&channel=QR' : '$path?channel=QR';
+}

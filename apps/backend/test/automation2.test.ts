@@ -208,12 +208,12 @@ describe('Isolation des réglages', () => {
   it('changer le délai A2 de 10 s à 60 s ne modifie rien d’autre', async () => {
     const { audio, imgs } = await seedA2Config(env, 7, 10);
     const a1audio = await one(env.db, `INSERT INTO media_assets (kind, source, name, external_url, status) VALUES ('audio','url','a1.ogg','https://x/a1.ogg','VALID') RETURNING id`);
-    await env.db.query(`UPDATE automation_configs SET audio_media_id=$1, text1='T1', text2='T2' WHERE automation_type='A1'`, [a1audio.id]);
+    await env.db.query(`UPDATE automation_configs SET audio_media_id=$1, text1='T1', text2='T2' WHERE automation_type='A1' AND channel='PROVIDER'`, [a1audio.id]);
     await createImport(env.ctx, { automationType: 'A2', source: 'paste', content: phones(5).join('\n') });
 
     const snapshot = async () => ({
-      a1: await one(env.db, `SELECT * FROM automation_configs WHERE automation_type='A1'`),
-      a2: await one(env.db, `SELECT audio_media_id, photo_media_ids, photo_count, window_policy, content_version FROM automation_configs WHERE automation_type='A2'`),
+      a1: await one(env.db, `SELECT * FROM automation_configs WHERE automation_type='A1' AND channel='PROVIDER'`),
+      a2: await one(env.db, `SELECT audio_media_id, photo_media_ids, photo_count, window_policy, content_version FROM automation_configs WHERE automation_type='A2' AND channel='PROVIDER'`),
       conn: await one(env.db, `SELECT * FROM provider_connections`),
       contacts: await many(env.db, `SELECT * FROM contacts ORDER BY phone_e164`),
       media: await many(env.db, `SELECT * FROM media_assets ORDER BY id`),
@@ -227,18 +227,18 @@ describe('Isolation des réglages', () => {
     expect(after.a2.audio_media_id).toBe(audio.id);
     expect(after.a2.photo_media_ids).toEqual(imgs.map((m) => m.id));
     expect(after).toEqual(before); // A1, audio/photos A2, connexion, contacts, médias : inchangés
-    const d = await one(env.db, `SELECT delay_between_contacts_seconds FROM automation_configs WHERE automation_type='A2'`);
+    const d = await one(env.db, `SELECT delay_between_contacts_seconds FROM automation_configs WHERE automation_type='A2' AND channel='PROVIDER'`);
     expect(d.delay_between_contacts_seconds).toBe(60);
   });
 
   it('modifier Automation 2 (audio, photos) ne touche jamais Automation 1', async () => {
     await seedA2Config(env, 2, 10);
-    const a1Before = await one(env.db, `SELECT * FROM automation_configs WHERE automation_type='A1'`);
+    const a1Before = await one(env.db, `SELECT * FROM automation_configs WHERE automation_type='A1' AND channel='PROVIDER'`);
     const newAudio = await one(env.db, `INSERT INTO media_assets (kind, source, name, external_url, status) VALUES ('audio','url','n.ogg','https://x/n.ogg','VALID') RETURNING id`);
     await cfg.setAudio(env.db, 'A2', newAudio.id);
     await cfg.setPhotos(env.db, []);
     await cfg.setPhotoCount(env.db, 4);
-    expect(await one(env.db, `SELECT * FROM automation_configs WHERE automation_type='A1'`)).toEqual(a1Before);
+    expect(await one(env.db, `SELECT * FROM automation_configs WHERE automation_type='A1' AND channel='PROVIDER'`)).toEqual(a1Before);
   });
 
   it('le délai est validé : 1 s à 2 min', async () => {

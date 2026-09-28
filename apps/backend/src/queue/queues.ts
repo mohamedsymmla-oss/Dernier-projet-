@@ -4,12 +4,14 @@ import type { AppContext } from '../context.js';
 import { a2Tick, handleRecipientJob } from '../services/engine.js';
 import { recoverRuns } from '../services/runs.js';
 import { processWebhookEvent } from '../services/webhooks.js';
+import { startQrRuntime } from '../qr/runtime.js';
 import type { JobScheduler } from './scheduler.js';
 
 export const QUEUE_NAMES = {
   recipients: 'a1-recipients',
   a2: 'a2-sequential',
   webhooks: 'webhook-events',
+  qrControl: 'qr-control',
 } as const;
 
 export function createRedis(url: string): Redis {
@@ -24,6 +26,7 @@ export class BullScheduler implements JobScheduler {
   readonly recipients: Queue;
   readonly a2: Queue;
   readonly webhooks: Queue;
+  readonly qrControl: Queue;
 
   constructor(
     connection: ConnectionOptions,
@@ -33,6 +36,11 @@ export class BullScheduler implements JobScheduler {
     this.recipients = new Queue(QUEUE_NAMES.recipients, { connection, defaultJobOptions: { ...defaults, attempts: 3, backoff: { type: 'exponential', delay: 5000 } } });
     this.a2 = new Queue(QUEUE_NAMES.a2, { connection, defaultJobOptions: { ...defaults, attempts: 3, backoff: { type: 'exponential', delay: 5000 } } });
     this.webhooks = new Queue(QUEUE_NAMES.webhooks, { connection, defaultJobOptions: { ...defaults, attempts: 8, backoff: { type: 'exponential', delay: 3000 } } });
+    this.qrControl = new Queue(QUEUE_NAMES.qrControl, { connection, defaultJobOptions: { ...defaults, attempts: 3, backoff: { type: 'fixed', delay: 3000 } } });
+  }
+
+  async enqueueQrControl(action: 'start' | 'logout' | 'stop') {
+    await this.qrControl.add(action, { action });
   }
 
   private async track(queue: string, jobId: string, runId: string | null, recipientId: string | null, delayMs = 0) {
@@ -76,7 +84,7 @@ export class BullScheduler implements JobScheduler {
   }
 
   async close() {
-    await Promise.all([this.recipients.close(), this.a2.close(), this.webhooks.close()]);
+    await Promise.all([this.recipients.close(), this.a2.close(), this.webhooks.close(), this.qrControl.close()]);
   }
 }
 
@@ -134,9 +142,18 @@ export function startWorkers(ctx: AppContext, connection: ConnectionOptions) {
   }
   webhooks.on('failed', (job, err) => log.error({ job_id: job?.id, err: err.message }, 'webhook_job_failed'));
 
+  // Session WhatsApp QR : toujours active dans le worker, pilotée par la file qr-control.
+  const qr = startQrRuntime(ctx);
+  const qrControl = new Worker(
+    QUEUE_NAMES.qrControl,
+    async (job) => qr.handle((job.data as { action: 'start' | 'logout' | 'stop' }).action),
+    { connection, concurrency: 1 },
+  );
+
   // Reprise après redémarrage + balayage périodique (jobs perdus, webhooks non traités).
   const sweep = async () => {
     try {
+      await qr.ensureRunning();
       const r = await recoverRuns(ctx);
       if (r.runs || r.webhooks) log.info(r, 'recovery_sweep');
     } catch (e) {
@@ -149,7 +166,8 @@ export function startWorkers(ctx: AppContext, connection: ConnectionOptions) {
   return {
     async close() {
       clearInterval(timer);
-      await Promise.all([recipients.close(), a2.close(), webhooks.close()]);
+      await Promise.all([recipients.close(), a2.close(), webhooks.close(), qrControl.close()]);
+      await qr.close();
     },
   };
 }

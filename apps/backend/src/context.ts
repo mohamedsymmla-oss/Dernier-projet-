@@ -13,6 +13,7 @@ import type { RateLimiter } from './lib/rate-limiter.js';
 import type { Logger } from './logger.js';
 import type { JobScheduler } from './queue/scheduler.js';
 import type { MediaStorage } from './storage/storage.js';
+import { QrConnector } from './qr/connector.js';
 
 export interface ConnectionRow {
   id: string;
@@ -38,6 +39,12 @@ export interface LogContext {
 
 export type ConnectorFactory = (conn: ConnectionRow, logCtx?: LogContext) => ProviderConnector;
 
+/** Décision des garde-fous du canal QR avant de traiter le contact suivant. */
+export type QrGateDecision =
+  | { action: 'go' }
+  | { action: 'wait'; waitMs: number; reason: string }
+  | { action: 'pause'; reason: string };
+
 export interface AppContext {
   config: AppConfig;
   db: Db;
@@ -50,11 +57,17 @@ export interface AppContext {
   scheduler: JobScheduler;
   connectorFor: ConnectorFactory;
   ffmpegAvailable: boolean;
+  /** Garde-fous du canal QR (plafonds, heures calmes, arrêt d'urgence). Absent = aucun canal QR. */
+  qrGate?: (ctx: AppContext, run: { config_snapshot?: { steps?: unknown[] } }) => Promise<QrGateDecision>;
+  /** Commandes de session QR (démarrer / déconnecter), exécutées par le worker qui détient le socket. */
+  qrControl?: (action: 'start' | 'logout' | 'stop') => Promise<void>;
 }
 
 /** Fabrique de connecteurs de production : déchiffre les secrets et journalise chaque appel HTTP (sans secret). */
-export function productionConnectorFactory(ctx: Omit<AppContext, 'connectorFor'>): ConnectorFactory {
+export function productionConnectorFactory(ctx: Omit<AppContext, 'connectorFor'>, full?: () => AppContext): ConnectorFactory {
   return (conn, logCtx = {}) => {
+    // Canal QR : connecteur propre, adossé à la session Baileys du worker (aucune clé API).
+    if (conn.provider === 'qr') return new QrConnector(full ? full() : (ctx as AppContext));
     if (!conn.api_key_enc) throw new Error('Clé API absente pour cette connexion');
     const apiKey = ctx.secrets.decrypt(conn.api_key_enc);
     const webhookSecret = conn.webhook_secret_enc ? ctx.secrets.decrypt(conn.webhook_secret_enc) : null;

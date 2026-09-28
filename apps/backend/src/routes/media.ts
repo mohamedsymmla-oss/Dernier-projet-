@@ -56,7 +56,8 @@ export async function mediaRoutes(app: FastifyInstance, ctx: AppContext) {
     if (!m) throw notFound('Média');
     const s = await one(ctx.db, 'SELECT test_phone_e164 FROM app_settings WHERE id=1');
     if (!s?.test_phone_e164) throw badRequest('Définissez un numéro de test dans Réglages');
-    const conn = await getActiveConnection(ctx);
+    const { channel } = parse(z.object({ channel: z.enum(['PROVIDER', 'QR']).default('PROVIDER') }), req.query ?? {});
+    const conn = await getActiveConnection(ctx, channel);
     const r = await sendDirectTest(ctx, conn, s.test_phone_e164, { kind: m.kind, mediaId: id });
     const caps = ctx.connectorFor(conn).capabilities();
     return {
@@ -65,7 +66,7 @@ export async function mediaRoutes(app: FastifyInstance, ctx: AppContext) {
       note:
         m.kind === 'audio'
           ? caps.sendVoiceNote.status === 'SUPPORTED'
-            ? 'Message vocal'
+            ? 'Envoyé comme vrai message vocal WhatsApp (OGG/Opus). Vérifiez l’affichage sur votre téléphone.'
             : 'Envoyé en « Audio standard » (le fournisseur ne propose pas de message vocal/PTT). Vérifiez l’affichage sur votre téléphone.'
           : 'Image envoyée',
     };

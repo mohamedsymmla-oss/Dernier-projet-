@@ -9,6 +9,7 @@ import { createLogger } from './logger.js';
 import { BullScheduler, createRedis } from './queue/queues.js';
 import { ffmpegAvailable } from './services/media.js';
 import { createStorage } from './storage/storage.js';
+import { qrGate } from './qr/safety.js';
 
 export async function createProductionContext(config: AppConfig = loadConfig()) {
   const log = createLogger(config.LOG_LEVEL);
@@ -29,6 +30,11 @@ export async function createProductionContext(config: AppConfig = loadConfig()) 
     scheduler,
     ffmpegAvailable: await ffmpegAvailable(),
   };
-  ctx = { ...base, connectorFor: productionConnectorFactory(base) };
+  ctx = {
+    ...base,
+    connectorFor: productionConnectorFactory(base, () => ctx),
+    qrGate,
+    qrControl: (action) => scheduler.enqueueQrControl(action),
+  };
   return { ctx, scheduler };
 }

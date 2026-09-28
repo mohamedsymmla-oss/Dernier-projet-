@@ -1,24 +1,40 @@
 import crypto from 'node:crypto';
-import type { AutomationType } from '@wa/shared';
+import type { AutomationType, Channel } from '@wa/shared';
 import { normalizePhone } from '@wa/shared';
 import { many, one, withTx } from '../db/pool.js';
 import type { AppContext } from '../context.js';
 import { AppError, badRequest, conflict, notFound } from '../lib/errors.js';
 import { audit } from './audit.js';
 import { buildSnapshot, type RunSnapshot } from './automation-config.js';
-import { currentA2Delay, maybeCompleteRun, nextContactDueAt } from './engine.js';
+import { delaySecondsFor, isSequentialRun, maybeCompleteRun, nextContactDueAt } from './engine.js';
 
 export type RunKind = 'SEQUENCE' | 'TEMPLATE' | 'TEST';
 
 /** Statuts qui « occupent » la clé d'idempotence : le contact est considéré comme déjà automatisé. */
 export const OCCUPYING_STATUSES = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'TEMPLATE_REQUIRED', 'NEEDS_REVIEW'];
 
-export function idempotencyKey(mode: string, kind: RunKind, type: AutomationType, contactId: string) {
+/**
+ * Clé d'idempotence. Canal fournisseur : format historique inchangé (`MODE:TYPE:contact`).
+ * Canal QR : préfixe `QR:` → les deux canaux ne partagent jamais leur anti-doublon.
+ */
+export function idempotencyKey(mode: string, kind: RunKind, type: AutomationType, contactId: string, channel: Channel = 'PROVIDER') {
   const prefix = kind === 'TEMPLATE' ? `${type}T` : type;
-  return `${mode}:${prefix}:${contactId}`;
+  return `${channel === 'QR' ? 'QR:' : ''}${mode}:${prefix}:${contactId}`;
 }
 
-export async function getActiveConnection(ctx: AppContext) {
+export async function getActiveConnection(ctx: AppContext, channel: Channel = 'PROVIDER') {
+  if (channel === 'QR') {
+    const qr = await one(
+      ctx.db,
+      `SELECT c.*, s.status AS qr_status FROM qr_sessions s JOIN provider_connections c ON c.id = s.connection_id
+        ORDER BY s.created_at DESC LIMIT 1`,
+    );
+    if (!qr) throw badRequest('WhatsApp QR non configuré : ouvrez « Connexion QR » et scannez le QR code');
+    if (qr.qr_status !== 'CONNECTED' || !qr.phone_number) {
+      throw badRequest('WhatsApp QR non connecté : scannez le QR code dans « Connexion QR »');
+    }
+    return qr;
+  }
   const conn = await one(
     ctx.db,
     `SELECT c.* FROM app_settings s JOIN provider_connections c ON c.id = s.active_connection_id WHERE s.id = 1`,
@@ -33,6 +49,7 @@ export async function getActiveConnection(ctx: AppContext) {
 
 interface CreateRunInput {
   type: AutomationType;
+  channel?: Channel;
   kind: RunKind;
   clientRequestId: string;
   importId?: string | null;
@@ -49,7 +66,9 @@ export async function createRun(ctx: AppContext, input: CreateRunInput) {
   const existing = await one(ctx.db, 'SELECT * FROM automation_runs WHERE client_request_id=$1', [input.clientRequestId]);
   if (existing) return { run: existing, created: false };
 
-  const conn = await getActiveConnection(ctx);
+  const channel: Channel = input.channel ?? 'PROVIDER';
+  if (channel === 'QR' && input.kind === 'TEMPLATE') throw badRequest('Les modèles WhatsApp n’existent que côté fournisseur');
+  const conn = await getActiveConnection(ctx, channel);
   let snapshot: RunSnapshot;
   let version: number;
   if (input.kind === 'TEMPLATE') {
@@ -60,7 +79,7 @@ export async function createRun(ctx: AppContext, input: CreateRunInput) {
     };
     version = 0;
   } else {
-    ({ snapshot, version } = await buildSnapshot(ctx.db, input.type));
+    ({ snapshot, version } = await buildSnapshot(ctx.db, input.type, channel));
   }
 
   let run: any;
@@ -69,8 +88,8 @@ export async function createRun(ctx: AppContext, input: CreateRunInput) {
       const number = await one(tx, 'SELECT id FROM whatsapp_numbers WHERE phone_e164=$1', [conn.phone_number]);
       const inserted = await tx.query(
         `INSERT INTO automation_runs (automation_type, kind, status, mode, connection_id, whatsapp_number_id, sender_phone,
-            client_request_id, import_id, config_snapshot, content_version, created_by, started_at)
-         VALUES ($1,$2,'RUNNING',$3,$4,$5,$6,$7,$8,$9,$10,$11,now()) RETURNING *`,
+            client_request_id, import_id, config_snapshot, content_version, created_by, started_at, channel)
+         VALUES ($1,$2,'RUNNING',$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),$12) RETURNING *`,
         [
           input.type,
           input.kind,
@@ -83,9 +102,14 @@ export async function createRun(ctx: AppContext, input: CreateRunInput) {
           JSON.stringify(snapshot),
           version,
           input.userId ?? null,
+          channel,
         ],
       );
       const run = inserted.rows[0];
+      if (input.importId) {
+        const imp = await one(tx, 'SELECT channel FROM contact_imports WHERE id=$1', [input.importId]);
+        if (imp && imp.channel !== channel) throw badRequest('Cette liste a été importée pour l’autre canal');
+      }
 
       let contactIds: string[];
       if (input.kind === 'SEQUENCE') {
@@ -107,17 +131,19 @@ export async function createRun(ctx: AppContext, input: CreateRunInput) {
         const contact = await one(tx, 'SELECT phone_e164 FROM contacts WHERE id=$1', [contactId]);
         if (!contact) continue;
         const key =
-          input.kind === 'TEST' ? `TEST:${crypto.randomUUID()}` : idempotencyKey(conn.mode, input.kind, input.type, contactId);
+          input.kind === 'TEST'
+            ? `TEST:${crypto.randomUUID()}`
+            : idempotencyKey(conn.mode, input.kind, input.type, contactId, channel);
         // Nouvelle ligne, ou « adoption » d'un destinataire annulé (jamais envoyé) d'une campagne arrêtée.
         const res = await tx.query(
-          `INSERT INTO automation_recipients (run_id, contact_id, phone_e164, automation_type, idempotency_key, position, content_version)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)
+          `INSERT INTO automation_recipients (run_id, contact_id, phone_e164, automation_type, idempotency_key, position, content_version, channel)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
            ON CONFLICT (idempotency_key) DO UPDATE
              SET run_id=EXCLUDED.run_id, position=EXCLUDED.position, status='PENDING', content_version=EXCLUDED.content_version,
                  lease_until=NULL, last_error=NULL, last_error_kind=NULL, updated_at=now()
              WHERE automation_recipients.status = 'CANCELLED'
            RETURNING id`,
-          [run.id, contactId, contact.phone_e164, input.type, key, position, version],
+          [run.id, contactId, contact.phone_e164, input.type, key, position, version, channel],
         );
         if (res.rowCount === 1) {
           // Si aucune étape n'a jamais été soumise, on régénère les étapes avec le contenu actuel.
@@ -136,14 +162,16 @@ export async function createRun(ctx: AppContext, input: CreateRunInput) {
         userId: input.userId,
         entityType: 'automation_run',
         entityId: run.id,
-        details: { type: input.type, kind: input.kind, total: position, mode: conn.mode },
+        details: { type: input.type, kind: input.kind, total: position, mode: conn.mode, channel },
       });
       return run;
     });
   } catch (e) {
     const err = e as { code?: string; constraint?: string };
     if (err.code === '23505' && err.constraint === 'automation_runs_one_active') {
-      throw conflict(`Une campagne ${input.type === 'A1' ? 'Automation 1' : 'Automation 2'} est déjà en cours ou en pause`);
+      throw conflict(
+        `Une campagne ${input.type === 'A1' ? 'Automation 1' : 'Automation 2'}${channel === 'QR' ? ' (WhatsApp QR)' : ''} est déjà en cours ou en pause`,
+      );
     }
     if (err.code === '23505' && err.constraint === 'automation_runs_client_request_id_key') {
       const again = await one(ctx.db, 'SELECT * FROM automation_runs WHERE client_request_id=$1', [input.clientRequestId]);
@@ -159,7 +187,7 @@ export async function createRun(ctx: AppContext, input: CreateRunInput) {
 
 /** Programme le traitement d'une campagne selon son type. */
 export async function dispatchRun(ctx: AppContext, run: any) {
-  if (run.automation_type === 'A2' && run.kind === 'SEQUENCE') {
+  if (isSequentialRun(run)) {
     const due = await nextContactDueAt(ctx, run);
     const wait = due ? Math.max(0, due.getTime() - ctx.clock.now().getTime()) : 0;
     await ctx.scheduler.scheduleA2Tick(run.id, run.tick_seq, wait);
@@ -284,13 +312,19 @@ export async function retryRecipients(
 }
 
 /** Test de la séquence sur le numéro de test uniquement. */
-export async function startTestRun(ctx: AppContext, type: AutomationType, clientRequestId: string, userId?: string | null) {
+export async function startTestRun(
+  ctx: AppContext,
+  type: AutomationType,
+  clientRequestId: string,
+  userId?: string | null,
+  channel: Channel = 'PROVIDER',
+) {
   const settings = await one(ctx.db, 'SELECT test_phone_e164 FROM app_settings WHERE id=1');
   if (!settings?.test_phone_e164) throw badRequest('Définissez d’abord un numéro de test dans Réglages');
   const n = normalizePhone(settings.test_phone_e164);
   if (!n.ok) throw badRequest('Numéro de test invalide');
   const contact = await upsertContact(ctx, n.e164);
-  return createRun(ctx, { type, kind: 'TEST', clientRequestId, contactIds: [contact.id], userId });
+  return createRun(ctx, { type, kind: 'TEST', clientRequestId, contactIds: [contact.id], userId, channel });
 }
 
 export async function upsertContact(ctx: AppContext, e164: string, importId?: string | null) {
@@ -318,8 +352,8 @@ export async function getRunProgress(ctx: AppContext, runId: string) {
   const inProgress = by.IN_PROGRESS ?? 0;
 
   let a2: Record<string, unknown> | null = null;
-  if (run.automation_type === 'A2' && run.kind === 'SEQUENCE') {
-    const delay = await currentA2Delay(ctx);
+  if (isSequentialRun(run)) {
+    const delay = await delaySecondsFor(ctx, run.channel, run.automation_type);
     const due = await nextContactDueAt(ctx, run);
     const nextRecipient = await one(
       ctx.db,
@@ -332,6 +366,7 @@ export async function getRunProgress(ctx: AppContext, runId: string) {
       nextContactPhone: nextRecipient?.phone_e164 ?? null,
       nextSendAt: run.status === 'RUNNING' && !inProgress ? due?.toISOString() ?? null : null,
       currentlyProcessing: inProgress > 0,
+      waitingReason: run.status === 'RUNNING' ? run.pause_reason : null,
     };
   }
   const steps = await many(
@@ -361,6 +396,7 @@ export function publicRun(run: any) {
   return {
     id: run.id,
     automationType: run.automation_type,
+    channel: run.channel ?? 'PROVIDER',
     kind: run.kind,
     status: run.status,
     mode: run.mode,

@@ -11,8 +11,9 @@ import 'common.dart';
 
 /// Progression en temps réel (actualisation toutes les 2 s) avec Pause / Reprendre / Arrêter.
 class RunProgressCard extends StatefulWidget {
-  const RunProgressCard({super.key, required this.automationType, this.refreshKey});
+  const RunProgressCard({super.key, required this.automationType, this.refreshKey, this.channel = kProvider});
   final String automationType;
+  final String channel;
   final Object? refreshKey;
 
   @override
@@ -51,7 +52,7 @@ class _RunProgressCardState extends State<RunProgressCard> {
 
   Future<void> _load() async {
     try {
-      final r = await api.get('/runs/active', query: {'type': widget.automationType});
+      final r = await api.get('/runs/active', query: {'type': widget.automationType, 'channel': widget.channel});
       if (!mounted) return;
       setState(() {
         _p = r == null || r == '' ? null : Map<String, dynamic>.from(r as Map);
@@ -90,7 +91,7 @@ class _RunProgressCardState extends State<RunProgressCard> {
     }
 
     return SectionCard(
-      title: widget.automationType == 'A1' ? 'AUTOMATISATION 1 — progression' : 'AUTOMATISATION 2 — progression',
+      title: '${widget.automationType == 'A1' ? 'AUTOMATISATION 1' : 'AUTOMATISATION 2'}${widget.channel == kQr ? ' QR' : ''} — progression',
       icon: Icons.timeline,
       subtitle: 'Démarrée le ${fmtDateTime(run['startedAt'])} • ${run['mode']}',
       trailing: StatusBadge(runStatusLabels[status] ?? status, tone: toneForRun(status)),
@@ -112,6 +113,11 @@ class _RunProgressCardState extends State<RunProgressCard> {
         ]),
         if (a2 != null && status == 'RUNNING') ...[
           const SizedBox(height: 10),
+          if (a2['waitingReason'] != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: StatusBadge('${a2['waitingReason']}', tone: Tone.warning, icon: Icons.shield_outlined),
+            ),
           InfoRow('Prochain contact', a2['nextContactPhone'] as String?),
           InfoRow('Prochain envoi dans', a2['currentlyProcessing'] == true ? 'envoi en cours…' : (countdown ?? '—')),
         ],
@@ -243,8 +249,8 @@ class TemplateFollowupCard extends StatelessWidget {
 }
 
 /// Test de la séquence complète sur le numéro de test uniquement, avec résultats détaillés.
-Future<void> runSequenceTest(BuildContext context, String type) async {
-  final r = await runAction(context, () => api.post('/automations/$type/test', {'clientRequestId': const Uuid().v4()}));
+Future<void> runSequenceTest(BuildContext context, String type, [String channel = kProvider]) async {
+  final r = await runAction(context, () => api.post(ch('/automations/$type/test', channel), {'clientRequestId': const Uuid().v4()}));
   if (r == null || !context.mounted) return;
   final runId = ((r as Map)['run'] as Map)['id'] as String;
   await showDialog<void>(context: context, builder: (_) => _TestRunDialog(runId: runId));
@@ -322,7 +328,13 @@ class _TestRunDialogState extends State<_TestRunDialog> {
 }
 
 /// Présets : enregistrer / appliquer / supprimer (sans jamais toucher à la connexion fournisseur).
-Future<void> showPresetsSheet(BuildContext context, {required String type, required Map<String, dynamic> currentPayload, required VoidCallback onApplied}) async {
+Future<void> showPresetsSheet(
+  BuildContext context, {
+  required String type,
+  required Map<String, dynamic> currentPayload,
+  required VoidCallback onApplied,
+  String channel = kProvider,
+}) async {
   await showModalBottomSheet<void>(
     context: context,
     showDragHandle: true,
@@ -331,9 +343,10 @@ Future<void> showPresetsSheet(BuildContext context, {required String type, requi
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         child: AsyncView<List>(
-          load: () async => (await api.get('/presets', query: {'type': type})) as List,
+          load: () async => (await api.get('/presets', query: {'type': type, 'channel': channel})) as List,
           builder: (ctx, list, reload) => Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Text('Présets ${type == 'A1' ? 'Automation 1' : 'Automation 2'}', style: Theme.of(ctx).textTheme.titleLarge),
+            Text('Présets ${type == 'A1' ? 'Automation 1' : 'Automation 2'}${channel == kQr ? ' — WhatsApp QR' : ''}',
+                style: Theme.of(ctx).textTheme.titleLarge),
             const Text('La connexion fournisseur n’est jamais incluse dans un préset.'),
             const SizedBox(height: 8),
             if (list.isEmpty) const EmptyState(icon: Icons.bookmarks_outlined, message: 'Aucun préset enregistré'),
@@ -369,7 +382,7 @@ Future<void> showPresetsSheet(BuildContext context, {required String type, requi
               onPressed: () async {
                 final name = await promptText(ctx, title: 'Nom du préset', hint: 'Ex : Automatisation lente 10 sec');
                 if (name == null || name.isEmpty || !ctx.mounted) return;
-                await runAction(ctx, () => api.post('/presets', {'automationType': type, 'name': name, 'payload': currentPayload}), success: 'Préset enregistré');
+                await runAction(ctx, () => api.post('/presets', {'automationType': type, 'channel': channel, 'name': name, 'payload': currentPayload}), success: 'Préset enregistré');
                 await reload();
               },
             ),

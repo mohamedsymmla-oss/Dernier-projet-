@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 import '../core/api.dart';
 import '../core/theme.dart';
 import '../widgets/common.dart';
+import '../widgets/delay_card.dart';
 import '../widgets/import_flow.dart';
 import '../widgets/media_widgets.dart';
 import '../widgets/run_progress.dart';
 
-Future<bool> voiceNoteSupported() async {
+Future<bool> voiceNoteSupported([String channel = kProvider]) async {
+  if (channel == kQr) return true; // WhatsApp QR : vrai message vocal (OGG/Opus)
   try {
     final providers = (await api.get('/providers') as List).cast<Map>();
     final conns = (await api.get('/connections') as List).cast<Map>();
@@ -19,13 +21,15 @@ Future<bool> voiceNoteSupported() async {
   }
 }
 
-Future<int> templateRequiredCount(String type) async {
+Future<int> templateRequiredCount(String type, [String channel = kProvider]) async {
+  if (channel == kQr) return 0; // pas de fenêtre de 24 h ni de modèles côté QR
   final r = await api.get('/history', query: {'automation': type, 'status': 'TEMPLATE_REQUIRED', 'pageSize': 1});
   return ((r as Map)['total'] as int?) ?? 0;
 }
 
 class Automation1Screen extends StatefulWidget {
-  const Automation1Screen({super.key});
+  const Automation1Screen({super.key, this.channel = kProvider});
+  final String channel;
 
   @override
   State<Automation1Screen> createState() => _Automation1ScreenState();
@@ -35,8 +39,8 @@ class _Automation1ScreenState extends State<Automation1Screen> {
   int _refresh = 0;
 
   Future<Map<String, dynamic>> _load() async {
-    final cfg = Map<String, dynamic>.from(await api.get('/automations/A1/config') as Map);
-    return {'cfg': cfg, 'voice': await voiceNoteSupported(), 'tpl': await templateRequiredCount('A1')};
+    final cfg = Map<String, dynamic>.from(await api.get(ch('/automations/A1/config', widget.channel)) as Map);
+    return {'cfg': cfg, 'voice': await voiceNoteSupported(widget.channel), 'tpl': await templateRequiredCount('A1', widget.channel)};
   }
 
   @override
@@ -46,7 +50,9 @@ class _Automation1ScreenState extends State<Automation1Screen> {
       load: _load,
       builder: (context, data, reload) {
         final cfg = data['cfg'] as Map<String, dynamic>;
+        final qr = widget.channel == kQr;
         return PageBody(onRefresh: reload, children: [
+          if (qr) const ChannelBanner(),
           SectionCard(
             title: 'CONTENU DE LA SÉQUENCE',
             icon: Icons.format_list_numbered,
@@ -57,10 +63,12 @@ class _Automation1ScreenState extends State<Automation1Screen> {
                 icon: const Icon(Icons.bookmarks_outlined),
                 onPressed: () => showPresetsSheet(context,
                     type: 'A1',
+                    channel: widget.channel,
                     currentPayload: {
                       'audioMediaId': (cfg['audio'] as Map?)?['id'],
                       'text1': cfg['text1'],
                       'text2': cfg['text2'],
+                      if (qr) 'delaySeconds': cfg['delaySeconds'],
                     },
                     onApplied: () => setState(() => _refresh++)),
               ),
@@ -77,30 +85,41 @@ class _Automation1ScreenState extends State<Automation1Screen> {
             title: 'AUDIO 1',
             media: cfg['audio'] as Map<String, dynamic>?,
             voiceNoteSupported: data['voice'] as bool,
+            channel: widget.channel,
             onSet: (id) async {
-              await runAction(context, () => api.put('/automations/A1/audio', {'mediaId': id}), success: 'Audio enregistré');
+              await runAction(context, () => api.put(ch('/automations/A1/audio', widget.channel), {'mediaId': id}), success: 'Audio enregistré');
               setState(() => _refresh++);
             },
           ),
-          _TextEditorCard(title: 'TEXTE 1', which: 'text1', initial: cfg['text1'] as String? ?? ''),
-          _TextEditorCard(title: 'TEXTE 2', which: 'text2', initial: cfg['text2'] as String? ?? ''),
+          _TextEditorCard(title: 'TEXTE 1', which: 'text1', initial: cfg['text1'] as String? ?? '', channel: widget.channel),
+          _TextEditorCard(title: 'TEXTE 2', which: 'text2', initial: cfg['text2'] as String? ?? '', channel: widget.channel),
+          if (qr)
+            DelayCard(
+              type: 'A1',
+              channel: widget.channel,
+              initial: cfg['delaySeconds'] as int? ?? 60,
+              subtitle: 'Côté QR, les contacts sont traités un par un (protection du numéro)',
+              onSaved: () => setState(() => _refresh++),
+            ),
           SectionCard(
             title: 'Tester sur mon numéro',
             icon: Icons.send_to_mobile,
             subtitle: 'Envoie la vraie séquence uniquement au numéro de test (Réglages)',
             child: Align(
               alignment: Alignment.centerLeft,
-              child: BusyButton(label: 'TESTER LA SÉQUENCE', icon: Icons.play_circle_outline, onPressed: () => runSequenceTest(context, 'A1')),
+              child: BusyButton(
+                  label: 'TESTER LA SÉQUENCE', icon: Icons.play_circle_outline, onPressed: () => runSequenceTest(context, 'A1', widget.channel)),
             ),
           ),
           ImportPanel(
             automationType: 'A1',
-            sequenceLabel: 'Audio + Texte 1 + Texte 2',
+            channel: widget.channel,
+            sequenceLabel: qr ? 'Vocal + Texte 1 + Texte 2 (un contact à la fois)' : 'Audio + Texte 1 + Texte 2',
             onStarted: () => setState(() => _refresh++),
           ),
-          RunProgressCard(automationType: 'A1', refreshKey: _refresh),
-          TemplateFollowupCard(automationType: 'A1', count: data['tpl'] as int, onStarted: () => setState(() => _refresh++)),
-          WindowPolicyCard(type: 'A1', policy: cfg['windowPolicy'] as String, onChanged: () => setState(() => _refresh++)),
+          RunProgressCard(automationType: 'A1', channel: widget.channel, refreshKey: _refresh),
+          if (!qr) TemplateFollowupCard(automationType: 'A1', count: data['tpl'] as int, onStarted: () => setState(() => _refresh++)),
+          if (!qr) WindowPolicyCard(type: 'A1', policy: cfg['windowPolicy'] as String, onChanged: () => setState(() => _refresh++)),
         ]);
       },
     );
@@ -134,10 +153,11 @@ class _StepChip extends StatelessWidget {
 }
 
 class _TextEditorCard extends StatefulWidget {
-  const _TextEditorCard({required this.title, required this.which, required this.initial});
+  const _TextEditorCard({required this.title, required this.which, required this.initial, this.channel = kProvider});
   final String title;
   final String which;
   final String initial;
+  final String channel;
 
   @override
   State<_TextEditorCard> createState() => _TextEditorCardState();
@@ -150,7 +170,7 @@ class _TextEditorCardState extends State<_TextEditorCard> {
   bool get _dirty => _c.text != _saved;
 
   Future<void> _save() async {
-    final r = await runAction(context, () => api.put('/automations/A1/texts/${widget.which}', {'value': _c.text}), success: '${widget.title} enregistré');
+    final r = await runAction(context, () => api.put(ch('/automations/A1/texts/${widget.which}', widget.channel), {'value': _c.text}), success: '${widget.title} enregistré');
     if (r != null) setState(() => _saved = _c.text);
   }
 

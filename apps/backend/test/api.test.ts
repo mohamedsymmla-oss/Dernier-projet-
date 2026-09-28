@@ -242,7 +242,7 @@ describe('API automatisations', () => {
     expect((await app.inject({ method: 'PUT', url: '/automations/A2/delay', headers: auth(), payload: { seconds: 150 } })).statusCode).toBe(400);
     const r = await app.inject({ method: 'PUT', url: '/automations/A2/delay', headers: auth(), payload: { seconds: 70 } });
     expect(r.json().delaySeconds).toBe(70);
-    expect(await one(env.db, `SELECT delay_between_contacts_seconds AS d FROM automation_configs WHERE automation_type='A2'`)).toMatchObject({ d: 70 });
+    expect(await one(env.db, `SELECT delay_between_contacts_seconds AS d FROM automation_configs WHERE automation_type='A2' AND channel='PROVIDER'`)).toMatchObject({ d: 70 });
   });
 
   it('présets : sauvegarde et application sans toucher la connexion', async () => {
@@ -270,7 +270,7 @@ describe('Médias', () => {
     await drainRecipients(env);
     const r3 = await app.inject({ method: 'DELETE', url: `/media/${audio.id}?force=true`, headers: auth() });
     expect(r3.statusCode).toBe(200);
-    const cfgRow = await one(env.db, `SELECT audio_media_id, text1 FROM automation_configs WHERE automation_type='A1'`);
+    const cfgRow = await one(env.db, `SELECT audio_media_id, text1 FROM automation_configs WHERE automation_type='A1' AND channel='PROVIDER'`);
     expect(cfgRow).toMatchObject({ audio_media_id: null, text1: 'Bonjour 1' });
     // L'historique conserve le média (suppression logique)
     expect(await one(env.db, 'SELECT deleted_at FROM media_assets WHERE id=$1', [audio.id])).toMatchObject({ deleted_at: expect.any(Date) });

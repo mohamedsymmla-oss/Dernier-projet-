@@ -30,6 +30,10 @@ Détails : [docs/architecture.md](docs/architecture.md) — SendZen : [docs/send
 **Automation 2** : personnes ayant répondu → Audio + 1 à 10 photos. **Un contact à la fois**, avec un délai
 réglable de **1 s à 2 min** entre deux contacts, appliqué par le serveur. Pause / reprise / arrêt.
 
+**WhatsApp QR** (nouvelle partie, séparée) : votre WhatsApp Business lié par QR code, avec les mêmes
+Automation 1 et 2, ses propres réglages, listes et campagnes, et une protection renforcée du numéro
+(un contact à la fois, plafond quotidien, heures calmes, arrêt d’urgence). Détails : [docs/whatsapp-qr.md](docs/whatsapp-qr.md).
+
 Protections : anti-doublon (un contact ne reçoit jamais deux fois la même automatisation), reprise après
 crash (seules les étapes manquantes sont envoyées), retries avec backoff exponentiel, vérification de la
 fenêtre WhatsApp de 24 h (« Modèle WhatsApp requis », jamais de contournement), confirmation avant chaque
@@ -169,7 +173,7 @@ puis hébergez `apps/mobile/build/web` (ajoutez son domaine à `CORS_ORIGINS`).
 ## 8. Tests
 
 ```bash
-npm test                         # 105 tests : numéros, SendZen, moteur, webhooks, API, BullMQ
+npm test                         # 136 tests : numéros, SendZen, moteur, webhooks, API, BullMQ, WhatsApp QR
 cd apps/mobile && flutter test   # tests de l’interface (minuteur, formats)
 ```
 Les tests backend utilisent une vraie base PostgreSQL et un vrai Redis :

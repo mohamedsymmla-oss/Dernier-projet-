@@ -58,6 +58,7 @@ export async function miscRoutes(app: FastifyInstance, ctx: AppContext) {
         to: z.string().optional(),
         provider: z.string().optional(),
         mode: z.enum(['PRODUCTION', 'TEST']).optional(),
+        channel: z.enum(['PROVIDER', 'QR']).optional(),
         includeTests: z.coerce.boolean().optional(),
         page: z.coerce.number().optional(),
         pageSize: z.coerce.number().optional(),

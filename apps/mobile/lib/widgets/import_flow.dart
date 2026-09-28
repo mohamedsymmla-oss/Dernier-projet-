@@ -11,8 +11,16 @@ import 'common.dart';
 /// Import d'une liste de numéros → analyse → confirmation complète → démarrage.
 /// Aucun envoi n'a lieu avant « CONFIRMER ET DÉMARRER ».
 class ImportPanel extends StatefulWidget {
-  const ImportPanel({super.key, required this.automationType, required this.sequenceLabel, required this.onStarted, this.allowResponders = false});
+  const ImportPanel({
+    super.key,
+    required this.automationType,
+    required this.sequenceLabel,
+    required this.onStarted,
+    this.allowResponders = false,
+    this.channel = kProvider,
+  });
   final String automationType;
+  final String channel;
   final String sequenceLabel;
   final VoidCallback onStarted;
   final bool allowResponders;
@@ -30,9 +38,10 @@ class _ImportPanelState extends State<ImportPanel> {
     setState(() => _busy = true);
     try {
       final r = source == 'responders'
-          ? await api.post('/imports/responders')
+          ? await api.post('/imports/responders', {'channel': widget.channel})
           : await api.post('/imports', {
               'automationType': widget.automationType,
+              'channel': widget.channel,
               'source': source,
               'content': content,
               'filename': filename,
@@ -104,7 +113,7 @@ class _ImportPanelState extends State<ImportPanel> {
   Future<void> _confirmAndStart(Map<String, dynamic> a) async {
     Map<String, dynamic> readiness;
     try {
-      readiness = Map<String, dynamic>.from(await api.get('/automations/${widget.automationType}/readiness') as Map);
+      readiness = Map<String, dynamic>.from(await api.get(ch('/automations/${widget.automationType}/readiness', widget.channel)) as Map);
     } catch (e) {
       if (mounted) await showError(context, e);
       return;
@@ -122,12 +131,13 @@ class _ImportPanelState extends State<ImportPanel> {
       builder: (ctx) => _ConfirmStartDialog(
         automationType: widget.automationType,
         eligible: a['counts']['eligible'] as int,
-        provider: conn['provider'] == 'sendzen' ? 'SendZen' : '${conn['provider']}',
+        provider: conn['provider'] == 'sendzen' ? 'SendZen' : (conn['provider'] == 'qr' ? 'WhatsApp QR (appareil lié)' : '${conn['provider']}'),
         phone: '${conn['phoneNumber']}',
         mode: '${conn['mode']}',
         sequence: widget.sequenceLabel,
         onConfirm: () => api.post('/runs', {
           'automationType': widget.automationType,
+          'channel': widget.channel,
           'importId': a['importId'],
           'clientRequestId': clientRequestId,
           'confirm': true,

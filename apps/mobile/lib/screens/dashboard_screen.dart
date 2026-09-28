@@ -104,6 +104,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               lines: const ['échecs, modèles requis, à vérifier'],
               onTap: () => context.go('/historique'),
             ),
+            _qrCard(context, Map<String, dynamic>.from((d['qr'] as Map?) ?? const {})),
             _Card(
               title: 'Réponses clients',
               icon: Icons.reply,
@@ -120,11 +121,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 for (final r in (d['activeRuns'] as List).cast<Map>())
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: Icon(r['automation_type'] == 'A1' ? Icons.looks_one : Icons.looks_two),
-                    title: Text(r['automation_type'] == 'A1' ? 'Automation 1' : 'Automation 2'),
-                    subtitle: Text(r['kind'] == 'TEMPLATE' ? 'Envoi de modèle WhatsApp' : 'Séquence'),
+                    leading: Icon(r['channel'] == 'QR' ? Icons.qr_code_2 : (r['automation_type'] == 'A1' ? Icons.looks_one : Icons.looks_two)),
+                    title: Text('${r['automation_type'] == 'A1' ? 'Automation 1' : 'Automation 2'}${r['channel'] == 'QR' ? ' — WhatsApp QR' : ''}'),
+                    subtitle: Text(r['pause_reason'] != null
+                        ? '${r['pause_reason']}'
+                        : (r['kind'] == 'TEMPLATE' ? 'Envoi de modèle WhatsApp' : 'Séquence')),
                     trailing: StatusBadge(runStatusLabels[r['status']] ?? '${r['status']}', tone: toneForRun(r['status'] as String?)),
-                    onTap: () => context.go(r['automation_type'] == 'A1' ? '/automation1' : '/automation2'),
+                    onTap: () => context.go('${r['channel'] == 'QR' ? '/qr' : ''}${r['automation_type'] == 'A1' ? '/automation1' : '/automation2'}'),
                   ),
               ]),
             ),
@@ -171,6 +174,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  Widget _qrCard(BuildContext context, Map<String, dynamic> qr) {
+    final status = qr['status'] as String? ?? 'NOT_CONFIGURED';
+    final (label, tone) = qr['emergencyStopped'] == true
+        ? ('Arrêt d’urgence', Tone.error)
+        : switch (status) {
+            'CONNECTED' => ('Connecté', Tone.ok),
+            'WAITING_SCAN' => ('En attente de scan', Tone.warning),
+            'CONNECTING' => ('Connexion…', Tone.info),
+            'NOT_CONFIGURED' => ('À configurer', Tone.inactive),
+            _ => ('Déconnecté', Tone.error),
+          };
+    return _Card(
+      title: 'WhatsApp QR',
+      icon: Icons.qr_code_2,
+      badge: StatusBadge(label, tone: tone),
+      lines: [
+        qr['phoneNumber'] as String? ?? 'Aucun numéro lié',
+        'A1 : ${qr['automation1Completed'] ?? 0} • A2 : ${qr['automation2Completed'] ?? 0} • réponses : ${qr['responses'] ?? 0}',
+      ],
+      onTap: () => context.go('/qr/connexion'),
+    );
+  }
+
   String _actionLabel(String a) => const {
         'run.created': 'Campagne démarrée',
         'run.paused': 'Campagne mise en pause',
@@ -196,6 +222,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'webhook.rejected': 'Webhook refusé (signature)',
         'preset.saved': 'Préset enregistré',
         'preset.applied': 'Préset appliqué',
+        'qr.start': 'Connexion WhatsApp QR demandée',
+        'qr.logout': 'WhatsApp QR déconnecté',
+        'qr.settings': 'Protection QR modifiée',
+        'qr.emergency_reset': 'Arrêt d’urgence QR levé',
       }[a] ??
       a;
 }

@@ -4,14 +4,15 @@ import '../core/api.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
 import '../widgets/common.dart';
-import '../widgets/delay_picker.dart';
+import '../widgets/delay_card.dart';
 import '../widgets/import_flow.dart';
 import '../widgets/media_widgets.dart';
 import '../widgets/run_progress.dart';
 import 'automation1_screen.dart';
 
 class Automation2Screen extends StatefulWidget {
-  const Automation2Screen({super.key});
+  const Automation2Screen({super.key, this.channel = kProvider});
+  final String channel;
 
   @override
   State<Automation2Screen> createState() => _Automation2ScreenState();
@@ -21,8 +22,8 @@ class _Automation2ScreenState extends State<Automation2Screen> {
   int _refresh = 0;
 
   Future<Map<String, dynamic>> _load() async {
-    final cfg = Map<String, dynamic>.from(await api.get('/automations/A2/config') as Map);
-    return {'cfg': cfg, 'voice': await voiceNoteSupported(), 'tpl': await templateRequiredCount('A2')};
+    final cfg = Map<String, dynamic>.from(await api.get(ch('/automations/A2/config', widget.channel)) as Map);
+    return {'cfg': cfg, 'voice': await voiceNoteSupported(widget.channel), 'tpl': await templateRequiredCount('A2', widget.channel)};
   }
 
   void _reload() => setState(() => _refresh++);
@@ -36,7 +37,9 @@ class _Automation2ScreenState extends State<Automation2Screen> {
         final cfg = data['cfg'] as Map<String, dynamic>;
         final photos = (cfg['photos'] as List).cast<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
         final count = cfg['photoCount'] as int;
+        final qr = widget.channel == kQr;
         return PageBody(onRefresh: reload, children: [
+          if (qr) const ChannelBanner(),
           SectionCard(
             title: 'AUTOMATISATION 2',
             icon: Icons.looks_two_outlined,
@@ -46,6 +49,7 @@ class _Automation2ScreenState extends State<Automation2Screen> {
               icon: const Icon(Icons.bookmarks_outlined),
               onPressed: () => showPresetsSheet(context,
                   type: 'A2',
+                  channel: widget.channel,
                   currentPayload: {
                     'audioMediaId': (cfg['audio'] as Map?)?['id'],
                     'photoMediaIds': photos.map((p) => p['id']).toList(),
@@ -61,31 +65,34 @@ class _Automation2ScreenState extends State<Automation2Screen> {
             title: 'AUDIO AUTOMATISATION 2',
             media: cfg['audio'] as Map<String, dynamic>?,
             voiceNoteSupported: data['voice'] as bool,
+            channel: widget.channel,
             onSet: (id) async {
-              await runAction(context, () => api.put('/automations/A2/audio', {'mediaId': id}), success: 'Audio enregistré');
+              await runAction(context, () => api.put(ch('/automations/A2/audio', widget.channel), {'mediaId': id}), success: 'Audio enregistré');
               _reload();
             },
           ),
-          _PhotosCard(photos: photos, count: count, onChanged: _reload),
-          _DelayCard(initial: cfg['delaySeconds'] as int, onSaved: _reload),
+          _PhotosCard(photos: photos, count: count, channel: widget.channel, onChanged: _reload),
+          DelayCard(type: 'A2', channel: widget.channel, initial: cfg['delaySeconds'] as int, onSaved: _reload),
           SectionCard(
             title: 'Tester sur mon numéro',
             icon: Icons.send_to_mobile,
             subtitle: 'Audio + photos envoyés uniquement au numéro de test',
             child: Align(
               alignment: Alignment.centerLeft,
-              child: BusyButton(label: 'TESTER LA SÉQUENCE', icon: Icons.play_circle_outline, onPressed: () => runSequenceTest(context, 'A2')),
+              child: BusyButton(
+                  label: 'TESTER LA SÉQUENCE', icon: Icons.play_circle_outline, onPressed: () => runSequenceTest(context, 'A2', widget.channel)),
             ),
           ),
           ImportPanel(
             automationType: 'A2',
-            sequenceLabel: 'Audio + $count photo(s), un contact à la fois',
+            channel: widget.channel,
+            sequenceLabel: '${qr ? 'Vocal' : 'Audio'} + $count photo(s), un contact à la fois',
             allowResponders: true,
             onStarted: _reload,
           ),
-          RunProgressCard(automationType: 'A2', refreshKey: _refresh),
-          TemplateFollowupCard(automationType: 'A2', count: data['tpl'] as int, onStarted: _reload),
-          WindowPolicyCard(type: 'A2', policy: cfg['windowPolicy'] as String, onChanged: _reload),
+          RunProgressCard(automationType: 'A2', channel: widget.channel, refreshKey: _refresh),
+          if (!qr) TemplateFollowupCard(automationType: 'A2', count: data['tpl'] as int, onStarted: _reload),
+          if (!qr) WindowPolicyCard(type: 'A2', policy: cfg['windowPolicy'] as String, onChanged: _reload),
         ]);
       },
     );
@@ -93,9 +100,10 @@ class _Automation2ScreenState extends State<Automation2Screen> {
 }
 
 class _PhotosCard extends StatefulWidget {
-  const _PhotosCard({required this.photos, required this.count, required this.onChanged});
+  const _PhotosCard({required this.photos, required this.count, required this.onChanged, this.channel = kProvider});
   final List<Map<String, dynamic>> photos;
   final int count;
+  final String channel;
   final VoidCallback onChanged;
 
   @override
@@ -112,12 +120,12 @@ class _PhotosCardState extends State<_PhotosCard> {
   }
 
   Future<void> _savePhotos(List<Map<String, dynamic>> list, {String? success}) async {
-    final r = await runAction(context, () => api.put('/automations/A2/photos', {'mediaIds': list.map((p) => p['id']).toList()}), success: success);
+    final r = await runAction(context, () => api.put(ch('/automations/A2/photos', widget.channel), {'mediaIds': list.map((p) => p['id']).toList()}), success: success);
     if (r != null) widget.onChanged();
   }
 
   Future<void> _setCount(int n) async {
-    final r = await runAction(context, () => api.put('/automations/A2/photo-count', {'count': n}));
+    final r = await runAction(context, () => api.put(ch('/automations/A2/photo-count', widget.channel), {'count': n}));
     if (r != null) widget.onChanged();
   }
 
@@ -236,54 +244,6 @@ class _PhotoTile extends StatelessWidget {
           const Icon(Icons.drag_indicator),
         ]),
       ),
-    );
-  }
-}
-
-/// Minuterie : le réglage est enregistré en base (automation_configs.delay_between_contacts_seconds)
-/// et respecté par le worker du serveur. Changer le délai ne modifie rien d'autre.
-class _DelayCard extends StatefulWidget {
-  const _DelayCard({required this.initial, required this.onSaved});
-  final int initial;
-  final VoidCallback onSaved;
-
-  @override
-  State<_DelayCard> createState() => _DelayCardState();
-}
-
-class _DelayCardState extends State<_DelayCard> {
-  late int _value = widget.initial;
-  late int _saved = widget.initial;
-
-  @override
-  Widget build(BuildContext context) {
-    final dirty = _value != _saved;
-    return SectionCard(
-      title: 'MINUTERIE ENTRE DEUX CONTACTS',
-      icon: Icons.timer_outlined,
-      subtitle: 'De 1 seconde à 2 minutes — appliqué par le serveur',
-      trailing: dirty ? const StatusBadge('Non enregistré', tone: Tone.warning, dense: true) : StatusBadge('Enregistré : ${fmtDelay(_saved)}', tone: Tone.ok, dense: true),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        DelayPicker(value: _value, onChanged: (v) => setState(() => _value = v)),
-        const SizedBox(height: 14),
-        Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-          if (dirty) TextButton(onPressed: () => setState(() => _value = _saved), child: const Text('Annuler')),
-          const SizedBox(width: 8),
-          BusyButton(
-            label: 'Enregistrer',
-            icon: Icons.save_outlined,
-            onPressed: dirty
-                ? () async {
-                    final r = await runAction(context, () => api.put('/automations/A2/delay', {'seconds': _value}), success: 'Délai enregistré : ${fmtDelay(_value)}');
-                    if (r != null) {
-                      setState(() => _saved = _value);
-                      widget.onSaved();
-                    }
-                  }
-                : null,
-          ),
-        ]),
-      ]),
     );
   }
 }

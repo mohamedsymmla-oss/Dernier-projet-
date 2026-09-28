@@ -1,8 +1,9 @@
-import { A2_DELAY_MAX_SECONDS, A2_DELAY_MIN_SECONDS, A2_MAX_PHOTOS, type AutomationType } from '@wa/shared';
+import { A2_DELAY_MAX_SECONDS, A2_DELAY_MIN_SECONDS, A2_MAX_PHOTOS, type AutomationType, type Channel } from '@wa/shared';
 import { many, one, type DbClient } from '../db/pool.js';
 import { badRequest } from '../lib/errors.js';
 
 export interface AutomationConfigRow {
+  channel: Channel;
   automation_type: AutomationType;
   audio_media_id: string | null;
   text1: string;
@@ -30,8 +31,8 @@ export interface RunSnapshot {
   delaySecondsAtStart?: number;
 }
 
-export async function getConfig(db: DbClient, type: AutomationType): Promise<AutomationConfigRow> {
-  const row = await one<AutomationConfigRow>(db, 'SELECT * FROM automation_configs WHERE automation_type=$1', [type]);
+export async function getConfig(db: DbClient, type: AutomationType, channel: Channel = 'PROVIDER'): Promise<AutomationConfigRow> {
+  const row = await one<AutomationConfigRow>(db, 'SELECT * FROM automation_configs WHERE channel=$2 AND automation_type=$1', [type, channel]);
   if (!row) throw new Error('Configuration introuvable');
   return row;
 }
@@ -48,66 +49,69 @@ async function assertMedia(db: DbClient, id: string, kind: 'audio' | 'image') {
  * c'est la garantie d'isolation des réglages (ex : changer le délai ne touche jamais aux médias).
  */
 
-export async function setAudio(db: DbClient, type: AutomationType, mediaId: string | null) {
+export async function setAudio(db: DbClient, type: AutomationType, mediaId: string | null, channel: Channel = 'PROVIDER') {
   if (mediaId) await assertMedia(db, mediaId, 'audio');
   return one<AutomationConfigRow>(
     db,
     `UPDATE automation_configs SET audio_media_id=$2, content_version=content_version+1, updated_at=now()
-     WHERE automation_type=$1 RETURNING *`,
-    [type, mediaId],
+     WHERE automation_type=$1 AND channel=$3 RETURNING *`,
+    [type, mediaId, channel],
   );
 }
 
-export async function setText(db: DbClient, which: 'text1' | 'text2', value: string) {
+export async function setText(db: DbClient, which: 'text1' | 'text2', value: string, channel: Channel = 'PROVIDER') {
   if (value.length > 4096) throw badRequest('Texte trop long (4096 caractères maximum pour WhatsApp)');
   return one<AutomationConfigRow>(
     db,
     `UPDATE automation_configs SET ${which === 'text1' ? 'text1' : 'text2'}=$1, content_version=content_version+1, updated_at=now()
-     WHERE automation_type='A1' RETURNING *`,
-    [value],
+     WHERE automation_type='A1' AND channel=$2 RETURNING *`,
+    [value, channel],
   );
 }
 
-export async function setPhotos(db: DbClient, mediaIds: string[]) {
+export async function setPhotos(db: DbClient, mediaIds: string[], channel: Channel = 'PROVIDER') {
   if (mediaIds.length > A2_MAX_PHOTOS) throw badRequest(`${A2_MAX_PHOTOS} photos maximum`);
   if (new Set(mediaIds).size !== mediaIds.length) throw badRequest('La même photo est présente deux fois');
   for (const id of mediaIds) await assertMedia(db, id, 'image');
   return one<AutomationConfigRow>(
     db,
     `UPDATE automation_configs SET photo_media_ids=$1::uuid[], content_version=content_version+1, updated_at=now()
-     WHERE automation_type='A2' RETURNING *`,
-    [mediaIds],
+     WHERE automation_type='A2' AND channel=$2 RETURNING *`,
+    [mediaIds, channel],
   );
 }
 
-export async function setPhotoCount(db: DbClient, count: number) {
+export async function setPhotoCount(db: DbClient, count: number, channel: Channel = 'PROVIDER') {
   if (!Number.isInteger(count) || count < 1 || count > A2_MAX_PHOTOS) throw badRequest('Nombre de photos entre 1 et 10');
   return one<AutomationConfigRow>(
     db,
     `UPDATE automation_configs SET photo_count=$1, content_version=content_version+1, updated_at=now()
-     WHERE automation_type='A2' RETURNING *`,
-    [count],
+     WHERE automation_type='A2' AND channel=$2 RETURNING *`,
+    [count, channel],
   );
 }
 
-/** Minuteur Automation 2 : champ indépendant, n'incrémente pas la version du contenu. */
-export async function setDelay(db: DbClient, seconds: number) {
+/**
+ * Minuteur entre deux contacts : champ indépendant, n'incrémente pas la version du contenu.
+ * Côté fournisseur : Automation 2 uniquement. Côté QR : Automation 1 et 2 (un contact à la fois).
+ */
+export async function setDelay(db: DbClient, seconds: number, channel: Channel = 'PROVIDER', type: AutomationType = 'A2') {
   if (!Number.isInteger(seconds) || seconds < A2_DELAY_MIN_SECONDS || seconds > A2_DELAY_MAX_SECONDS) {
     throw badRequest(`Le délai doit être compris entre ${A2_DELAY_MIN_SECONDS} seconde et ${A2_DELAY_MAX_SECONDS / 60} minutes`);
   }
   return one<AutomationConfigRow>(
     db,
     `UPDATE automation_configs SET delay_between_contacts_seconds=$1, updated_at=now()
-     WHERE automation_type='A2' RETURNING *`,
-    [seconds],
+     WHERE automation_type=$3 AND channel=$2 RETURNING *`,
+    [seconds, channel, type],
   );
 }
 
-export async function setWindowPolicy(db: DbClient, type: AutomationType, policy: 'ALLOW_UNKNOWN' | 'REQUIRE_KNOWN') {
+export async function setWindowPolicy(db: DbClient, type: AutomationType, policy: 'ALLOW_UNKNOWN' | 'REQUIRE_KNOWN', channel: Channel = 'PROVIDER') {
   return one<AutomationConfigRow>(
     db,
-    `UPDATE automation_configs SET window_policy=$2, updated_at=now() WHERE automation_type=$1 RETURNING *`,
-    [type, policy],
+    `UPDATE automation_configs SET window_policy=$2, updated_at=now() WHERE automation_type=$1 AND channel=$3 RETURNING *`,
+    [type, policy, channel],
   );
 }
 
@@ -117,8 +121,12 @@ export interface SnapshotProblem {
 }
 
 /** Construit la séquence figée d'une campagne. Lève une erreur lisible si la configuration est incomplète. */
-export async function buildSnapshot(db: DbClient, type: AutomationType): Promise<{ snapshot: RunSnapshot; version: number }> {
-  const cfg = await getConfig(db, type);
+export async function buildSnapshot(
+  db: DbClient,
+  type: AutomationType,
+  channel: Channel = 'PROVIDER',
+): Promise<{ snapshot: RunSnapshot; version: number }> {
+  const cfg = await getConfig(db, type, channel);
   const problems: SnapshotProblem[] = [];
   const ids = [cfg.audio_media_id, ...cfg.photo_media_ids].filter(Boolean) as string[];
   const media = new Map(
@@ -155,7 +163,7 @@ export async function buildSnapshot(db: DbClient, type: AutomationType): Promise
     snapshot: {
       steps,
       windowPolicy: cfg.window_policy,
-      delaySecondsAtStart: type === 'A2' ? cfg.delay_between_contacts_seconds : undefined,
+      delaySecondsAtStart: type === 'A2' || channel === 'QR' ? cfg.delay_between_contacts_seconds : undefined,
     },
     version: cfg.content_version,
   };

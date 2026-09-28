@@ -1,4 +1,5 @@
 import { ProviderError, toProviderError, type OutboundMessage } from '@wa/provider-connectors';
+import type { AutomationType, Channel } from '@wa/shared';
 import { many, one, withTx } from '../db/pool.js';
 import type { AppContext, ConnectionRow } from '../context.js';
 import type { RunSnapshot } from './automation-config.js';
@@ -33,6 +34,7 @@ interface ClaimedRecipient {
   contact_id: string;
   phone_e164: string;
   automation_type: 'A1' | 'A2';
+  channel: Channel;
   run_kind: 'SEQUENCE' | 'TEMPLATE' | 'TEST';
   run_mode: 'PRODUCTION' | 'TEST';
   connection_id: string;
@@ -67,7 +69,7 @@ async function claim(ctx: AppContext, recipientId: string): Promise<ClaimedRecip
        FROM automation_runs run
       WHERE r.id = $1 AND run.id = r.run_id AND run.status = 'RUNNING'
         AND (r.status = 'PENDING' OR (r.status = 'IN_PROGRESS' AND r.lease_until < now()))
-      RETURNING r.id, r.run_id, r.contact_id, r.phone_e164, r.automation_type,
+      RETURNING r.id, r.run_id, r.contact_id, r.phone_e164, r.automation_type, run.channel,
                 run.kind AS run_kind, run.mode AS run_mode, run.connection_id,
                 run.config_snapshot, run.sender_phone`,
     [recipientId, String(LEASE_SECONDS)],
@@ -103,13 +105,19 @@ async function updateContactStatus(
   // Les campagnes de test et le mode TEST ne modifient jamais le statut « production » du contact.
   if (r.run_kind !== 'SEQUENCE' || r.run_mode !== 'PRODUCTION') return;
   const p = COLUMN_PREFIX[r.automation_type];
+  // Canal QR : statuts rangés dans qr_contact_status, jamais dans les colonnes du canal fournisseur.
+  const table = r.channel === 'QR' ? 'qr_contact_status' : 'contacts';
+  const idCol = r.channel === 'QR' ? 'contact_id' : 'id';
+  if (r.channel === 'QR') {
+    await ctx.db.query('INSERT INTO qr_contact_status (contact_id) VALUES ($1) ON CONFLICT DO NOTHING', [r.contact_id]);
+  }
   await ctx.db.query(
-    `UPDATE contacts SET ${p}_status=$2, ${p}_run_id=$3,
+    `UPDATE ${table} SET ${p}_status=$2, ${p}_run_id=$3,
         ${p}_first_sent_at = CASE WHEN $4 THEN coalesce(${p}_first_sent_at, $6) ELSE ${p}_first_sent_at END,
         ${p}_completed_at = CASE WHEN $5 THEN $6 ELSE ${p}_completed_at END,
         last_error = CASE WHEN $7::text IS NOT NULL THEN $7 ELSE last_error END,
         updated_at = now()
-      WHERE id=$1`,
+      WHERE ${idCol}=$1`,
     [r.contact_id, status, r.run_id, !!opts.firstSent, !!opts.completed, ctx.clock.now(), opts.error ?? null],
   );
 }
@@ -155,9 +163,9 @@ export async function buildOutbound(ctx: AppContext, step: Pick<StepRow, 'kind' 
     case 'text':
       return { kind: 'text', body: step.text_body ?? '' };
     case 'audio':
-      return { kind: 'audio', media: { link: await resolveMediaUrl(ctx, step.media_id!) } };
+      return { kind: 'audio', media: { link: await resolveMediaUrl(ctx, step.media_id!) }, mediaId: step.media_id! };
     case 'image':
-      return { kind: 'image', media: { link: await resolveMediaUrl(ctx, step.media_id!) } };
+      return { kind: 'image', media: { link: await resolveMediaUrl(ctx, step.media_id!) }, mediaId: step.media_id! };
     case 'template':
       return { kind: 'template', name: step.template!.name, languageCode: step.template!.language };
   }
@@ -231,6 +239,10 @@ async function sendStep(
     if (!outboundId) return { ok: false, outcome: 'skipped', reason: 'Étape déjà prise en charge' };
 
     const connector = ctx.connectorFor(conn, { runId: r.run_id, recipientId: r.id, stepId: step.id, attempt: attempts });
+    // Vrai message vocal uniquement si le canal le permet réellement (QR : oui ; SendZen : audio standard).
+    if (message.kind === 'audio' && connector.capabilities().sendVoiceNote.status === 'SUPPORTED') {
+      message = { ...message, asVoiceNote: true };
+    }
     try {
       const res = await connector.send(
         { phoneNumber: r.sender_phone, phoneNumberId: conn.phone_number_id ?? '', wabaId: conn.waba_id ?? '' },
@@ -268,13 +280,14 @@ async function sendStep(
         await sleepWithLease(ctx, r.id, backoffMs(ctx, attempts, pe.details.retryAfterMs));
         continue;
       }
-      if (pe.kind === 'AUTH') {
+      if (pe.kind === 'AUTH' || pe.kind === 'UNAVAILABLE') {
         // Rien n'a été envoyé : on remet l'étape en attente (tentative non comptée) et on suspend la campagne.
         await ctx.db.query(
-          `UPDATE automation_steps SET status='PENDING', attempts=attempts-1, last_error=$2, last_error_kind='AUTH', updated_at=now() WHERE id=$1`,
-          [step.id, pe.message],
+          `UPDATE automation_steps SET status='PENDING', attempts=attempts-1, last_error=$2, last_error_kind=$3, updated_at=now() WHERE id=$1`,
+          [step.id, pe.message, pe.kind],
         );
-        return { ok: false, outcome: 'paused', reason: `Authentification refusée par le fournisseur : ${pe.message}` };
+        const reason = pe.kind === 'AUTH' ? `Authentification refusée par le fournisseur : ${pe.message}` : pe.message;
+        return { ok: false, outcome: 'paused', reason };
       }
       const finalKind = pe.retryable ? `${pe.kind}_EXHAUSTED` : pe.kind;
       await ctx.db.query(
@@ -299,9 +312,16 @@ export async function processRecipient(ctx: AppContext, recipientId: string): Pr
   const log = ctx.log.child({ run_id: r.run_id, recipient_id: r.id });
 
   const conn = await one<ConnectionRow>(ctx.db, 'SELECT * FROM provider_connections WHERE id=$1', [r.connection_id]);
-  if (!conn || conn.status === 'DISCONNECTED' || !conn.api_key_enc) {
+  const unusable = !conn || (conn.provider === 'qr' ? conn.status !== 'CONNECTED' : conn.status === 'DISCONNECTED' || !conn.api_key_enc);
+  if (unusable) {
     await ctx.db.query(`UPDATE automation_recipients SET status='PENDING', lease_until=NULL WHERE id=$1`, [r.id]);
-    await pauseRun(ctx, r.run_id, 'Connexion fournisseur déconnectée : reconnectez puis reprenez');
+    await pauseRun(
+      ctx,
+      r.run_id,
+      conn?.provider === 'qr'
+        ? 'WhatsApp QR déconnecté : reconnectez-le (scan du QR) puis reprenez'
+        : 'Connexion fournisseur déconnectée : reconnectez puis reprenez',
+    );
     return { outcome: 'paused', sent: 0, reason: 'Connexion déconnectée' };
   }
 
@@ -330,7 +350,8 @@ export async function processRecipient(ctx: AppContext, recipientId: string): Pr
     }
 
     // Conformité : vérifier la fenêtre de conversation avant chaque message libre.
-    if (step.kind !== 'template') {
+    // (Règle propre à l'API officielle ; le canal QR a ses propres garde-fous : plafonds, heures calmes.)
+    if (step.kind !== 'template' && r.channel !== 'QR') {
       const contact = await one(ctx.db, 'SELECT last_inbound_at FROM contacts WHERE id=$1', [r.contact_id]);
       const decision = checkFreeFormWindow(contact?.last_inbound_at ?? null, policy, ctx.clock.now());
       if (!decision.allowed) {
@@ -376,13 +397,15 @@ export async function handleRecipientJob(ctx: AppContext, runId: string, recipie
 }
 
 /**
- * AUTOMATION 2 — file lente, un contact à la fois.
+ * FILE LENTE — un contact à la fois (Automation 2 fournisseur, Automation 1 et 2 du canal QR).
  *
  * Un seul « tick » actif par campagne (compare-and-swap sur tick_seq).
  * Sémantique du délai : contact N traité et accepté → attendre `delay` → contact N+1.
  * Le moment de fin du contact précédent est persisté (last_contact_finished_at) :
  * après un redémarrage, pause ou changement de délai, le prochain contact ne démarre
  * jamais avant last_contact_finished_at + délai courant.
+ * Canal QR : avant chaque contact, les garde-fous (arrêt d'urgence, heures calmes, plafond du jour)
+ * peuvent repousser le traitement ; ils ne le forcent jamais.
  */
 export async function a2Tick(ctx: AppContext, runId: string, seq: number): Promise<string> {
   const run = await one(
@@ -400,6 +423,21 @@ export async function a2Tick(ctx: AppContext, runId: string, seq: number): Promi
   if (due && now < due.getTime()) {
     await ctx.scheduler.scheduleA2Tick(runId, nextSeq, due.getTime() - now);
     return 'waiting';
+  }
+
+  if (run.channel === 'QR' && ctx.qrGate) {
+    const gate = await ctx.qrGate(ctx, run);
+    if (gate.action === 'pause') {
+      await pauseRun(ctx, runId, gate.reason);
+      return 'paused';
+    }
+    if (gate.action === 'wait') {
+      await ctx.db.query('UPDATE automation_runs SET pause_reason=$2 WHERE id=$1', [runId, gate.reason]);
+      await ctx.scheduler.scheduleA2Tick(runId, nextSeq, gate.waitMs);
+      log.info({ reason: gate.reason, wait_ms: gate.waitMs }, 'qr_gate_wait');
+      return 'waiting';
+    }
+    if (run.pause_reason) await ctx.db.query('UPDATE automation_runs SET pause_reason=NULL WHERE id=$1', [runId]);
   }
 
   const busy = await one(
@@ -424,7 +462,7 @@ export async function a2Tick(ctx: AppContext, runId: string, seq: number): Promi
     return 'completed';
   }
   await ctx.db.query('UPDATE automation_runs SET current_recipient_id=$2 WHERE id=$1', [runId, next.id]);
-  log.info({ recipient_id: next.id }, 'a2_contact_start');
+  log.info({ recipient_id: next.id }, 'sequential_contact_start');
   const res = await processRecipient(ctx, next.id);
   if (res.outcome === 'paused' || res.outcome === 'skipped') return res.outcome;
 
@@ -446,13 +484,30 @@ export async function a2Tick(ctx: AppContext, runId: string, seq: number): Promi
   return 'processed';
 }
 
-export async function currentA2Delay(ctx: AppContext): Promise<number> {
-  const c = await one(ctx.db, `SELECT delay_between_contacts_seconds AS d FROM automation_configs WHERE automation_type='A2'`);
+/** Une campagne est-elle traitée en file lente (un contact à la fois) ? */
+export function isSequentialRun(run: { automation_type: string; kind: string; channel?: string }): boolean {
+  return run.kind === 'SEQUENCE' && (run.automation_type === 'A2' || run.channel === 'QR');
+}
+
+export async function delaySecondsFor(ctx: AppContext, channel: Channel = 'PROVIDER', type: AutomationType = 'A2'): Promise<number> {
+  const c = await one(
+    ctx.db,
+    `SELECT delay_between_contacts_seconds AS d FROM automation_configs WHERE automation_type=$1 AND channel=$2`,
+    [type, channel],
+  );
   return Number(c?.d ?? 60);
 }
 
-export async function nextContactDueAt(ctx: AppContext, run: { last_contact_finished_at: Date | null }): Promise<Date | null> {
+/** Délai Automation 2 du canal fournisseur (compatibilité). */
+export async function currentA2Delay(ctx: AppContext): Promise<number> {
+  return delaySecondsFor(ctx, 'PROVIDER', 'A2');
+}
+
+export async function nextContactDueAt(
+  ctx: AppContext,
+  run: { last_contact_finished_at: Date | null; channel?: Channel; automation_type?: AutomationType },
+): Promise<Date | null> {
   if (!run.last_contact_finished_at) return null;
-  const delay = await currentA2Delay(ctx);
+  const delay = await delaySecondsFor(ctx, run.channel ?? 'PROVIDER', run.automation_type ?? 'A2');
   return new Date(new Date(run.last_contact_finished_at).getTime() + delay * 1000);
 }

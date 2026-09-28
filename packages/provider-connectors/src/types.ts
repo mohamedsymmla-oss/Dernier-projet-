@@ -4,7 +4,7 @@
  * ne connaît que ces types : changer ou ajouter un fournisseur ne touche pas aux automatisations.
  */
 
-export type ProviderId = 'sendzen';
+export type ProviderId = 'sendzen' | 'qr';
 
 /** Niveau de confiance d'une capacité, affiché tel quel dans l'interface. */
 export type CapabilityStatus =
@@ -67,8 +67,8 @@ export type MediaRef = { link: string } | { id: string };
 
 export type OutboundMessage =
   | { kind: 'text'; body: string; previewUrl?: boolean }
-  | { kind: 'audio'; media: MediaRef; asVoiceNote?: boolean }
-  | { kind: 'image'; media: MediaRef; caption?: string }
+  | { kind: 'audio'; media: MediaRef; asVoiceNote?: boolean; mediaId?: string }
+  | { kind: 'image'; media: MediaRef; caption?: string; mediaId?: string }
   | { kind: 'template'; name: string; languageCode: string; components?: unknown[] };
 
 export interface SendResult {
@@ -88,6 +88,7 @@ export type ProviderErrorKind =
   | 'INVALID_RECIPIENT'
   | 'INVALID_MEDIA'
   | 'PERMANENT' // autre erreur définitive
+  | 'UNAVAILABLE' // canal indisponible (ex : WhatsApp QR déconnecté) : mettre en pause, ne rien compter
   | 'NOT_AVAILABLE'; // fonctionnalité non disponible pour ce fournisseur
 
 export class ProviderError extends Error {
