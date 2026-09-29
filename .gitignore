@@ -22,3 +22,6 @@ apps/mobile/android/.gradle/
 # Fichiers binaires téléchargés localement (APK)
 livrables/
 *.apk
+
+# Sauvegarde Redis locale (tests)
+dump.rdb
