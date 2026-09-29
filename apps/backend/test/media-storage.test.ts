@@ -1,10 +1,13 @@
 import { execFileSync } from 'node:child_process';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { createUser } from '../src/auth.js';
 import { one } from '../src/db/pool.js';
 import { getVoiceNote } from '../src/qr/audio.js';
 import { getMediaUrl } from '../src/services/media.js';
+import { fetchPublicUrl } from '../src/services/media-probe.js';
 import { DatabaseStorage } from '../src/storage/storage.js';
 import { closeDb, createTestEnv, type TestEnv } from './helpers.js';
 
@@ -87,6 +90,24 @@ describe('Stockage des médias en base (sans S3)', () => {
     expect(v.converted).toBe(true);
     expect(v.mime).toBe('audio/ogg; codecs=opus');
     expect(v.data.length).toBeGreaterThan(0);
+  });
+
+  it('URL publique : le téléchargement fonctionne (résolution DNS Node ≥ 20) et les adresses privées restent refusées', async () => {
+    const server = http.createServer((_q, r) => {
+      r.setHeader('content-type', 'audio/ogg');
+      r.end(opus);
+    });
+    await new Promise<void>((ok) => server.listen(0, ok));
+    const url = `http://localhost:${(server.address() as AddressInfo).port}/audio.opus`;
+    try {
+      const allowed = await fetchPublicUrl(url, 1e7, true);
+      expect(allowed.ok).toBe(true);
+      expect(allowed.ok && allowed.body.equals(opus)).toBe(true);
+      const blocked = await fetchPublicUrl(url, 1e7, false);
+      expect(blocked).toMatchObject({ ok: false, error: expect.stringMatching(/privée/) });
+    } finally {
+      server.close();
+    }
   });
 
   it('suppression : le fichier est retiré de la base', async () => {
