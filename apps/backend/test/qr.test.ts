@@ -26,6 +26,19 @@ function manager(make = fakeSocketFactory(env)) {
   return { m, ...make };
 }
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
+/** Laisse passer les minuteries puis attend la fin réelle du traitement des événements (pas de délai fixe seul). */
+async function settle(m: QrSessionManager, ms = 30) {
+  await tick(ms);
+  await m.idle();
+}
+/** Attend qu'une condition devienne vraie (machines CI lentes), sans jamais attendre indéfiniment. */
+async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 5000) {
+  const end = Date.now() + timeoutMs;
+  while (!(await cond())) {
+    if (Date.now() > end) throw new Error('Condition non atteinte à temps');
+    await tick(10);
+  }
+}
 const connectedProvider = (sock: FakeQrSocket) => ({ connectedSocket: () => sock });
 
 /** Démarre une campagne QR sur une liste collée. */
@@ -73,15 +86,15 @@ describe('Session QR : cycle de vie', () => {
     await m.start();
     const sock = sockets[0]!;
     sock.emit('connection.update', { qr: 'QR-CODE-1' });
-    await tick();
+    await settle(m);
     expect(await one(env.db, 'SELECT status, qr FROM qr_sessions')).toMatchObject({ status: 'WAITING_SCAN', qr: 'QR-CODE-1' });
     sock.emit('connection.update', { qr: 'QR-CODE-2' });
-    await tick();
+    await settle(m);
     expect(await one(env.db, 'SELECT qr FROM qr_sessions')).toMatchObject({ qr: 'QR-CODE-2' });
 
     sock.user = { id: '22371111111:5@s.whatsapp.net', name: 'Ma Boutique' };
     sock.emit('connection.update', { connection: 'open' });
-    await tick();
+    await settle(m);
     const s = await one(env.db, 'SELECT * FROM qr_sessions');
     expect(s).toMatchObject({ status: 'CONNECTED', qr: null, phone_number: '+22371111111', push_name: 'Ma Boutique' });
     expect(s.paired_at).toBeTruthy();
@@ -94,7 +107,7 @@ describe('Session QR : cycle de vie', () => {
     const { m, sockets } = manager();
     await m.start();
     for (let i = 1; i <= 7; i++) sockets[0]!.emit('connection.update', { qr: `QR-${i}` });
-    await tick(80);
+    await settle(m, 80);
     expect(await one(env.db, 'SELECT status, desired_state, last_error FROM qr_sessions')).toMatchObject({
       status: 'DISCONNECTED',
       desired_state: 'STOPPED',
@@ -115,12 +128,12 @@ describe('Session QR : cycle de vie', () => {
     const sock = sockets.at(-1)!;
     sock.user = { id: '22371111111@s.whatsapp.net' };
     sock.emit('connection.update', { connection: 'open' });
-    await tick();
+    await settle(m);
     sock.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 428 }, message: 'Connection Closed' } } });
-    await tick(80);
-    expect(sockets.length).toBeGreaterThanOrEqual(3); // nouveau socket créé
+    await waitFor(() => sockets.length >= 3); // nouveau socket créé
+    await m.idle();
     sockets.at(-1)!.emit('connection.update', { connection: 'open' });
-    await tick();
+    await settle(m);
     expect(await one(env.db, 'SELECT status FROM qr_sessions')).toMatchObject({ status: 'CONNECTED' });
     expect(await one(env.db, 'SELECT count(*)::int AS n FROM qr_auth')).toMatchObject({ n: expect.any(Number) });
   });
@@ -131,11 +144,11 @@ describe('Session QR : cycle de vie', () => {
     await m.start();
     sockets[0]!.user = { id: '22371111111@s.whatsapp.net' };
     sockets[0]!.emit('connection.update', { connection: 'open' });
-    await tick();
+    await settle(m);
     enableQr(env, m);
     await startQr('A1', phones(3));
     sockets[0]!.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 401 } } } });
-    await tick(80);
+    await settle(m, 80);
     expect(await one(env.db, 'SELECT status, desired_state FROM qr_sessions')).toMatchObject({ status: 'LOGGED_OUT', desired_state: 'STOPPED' });
     expect(await one(env.db, 'SELECT count(*)::int AS n FROM qr_auth')).toMatchObject({ n: 0 });
     expect(await one(env.db, `SELECT status, pause_reason FROM automation_runs WHERE channel='QR'`)).toMatchObject({
@@ -149,7 +162,7 @@ describe('Session QR : cycle de vie', () => {
     const { m, sockets } = manager();
     await m.start();
     sockets[0]!.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 403 } } } });
-    await tick(80);
+    await settle(m, 80);
     expect(await one(env.db, 'SELECT emergency_stopped FROM qr_settings')).toMatchObject({ emergency_stopped: true });
     expect(sockets.length).toBe(1); // aucune reconnexion
   });
@@ -159,7 +172,7 @@ describe('Session QR : cycle de vie', () => {
     const m = new QrSessionManager(env.ctx, f.make, { reconnectBaseMs: 5, connectWatchdogMs: 30 });
     managers.push(m);
     await m.start();
-    await tick(120);
+    await settle(m, 120);
     await m.idle();
     expect(await one(env.db, 'SELECT status, last_error FROM qr_sessions')).toMatchObject({
       status: 'DISCONNECTED',
@@ -196,7 +209,7 @@ describe('Messages reçus sur le canal QR', () => {
     const sock = sockets[0]!;
     sock.user = { id: '22371111111@s.whatsapp.net' };
     sock.emit('connection.update', { connection: 'open' });
-    await tick();
+    await settle(m);
     enableQr(env, m);
     const [p] = phones(1);
     await startQr('A1', [p!]);
@@ -212,7 +225,7 @@ describe('Messages reçus sur le canal QR', () => {
         { key: { remoteJid: jid, id: 'ME1', fromMe: true }, message: { conversation: 'moi' }, messageTimestamp: ts },
       ],
     });
-    await tick(80);
+    await settle(m, 80);
     const ins = await many(env.db, 'SELECT provider, provider_message_id, text FROM inbound_messages');
     expect(ins).toEqual([{ provider: 'qr', provider_message_id: 'IN1', text: 'Oui merci' }]);
     const qr = await one(env.db, 'SELECT q.* FROM qr_contact_status q JOIN contacts c ON c.id=q.contact_id WHERE c.phone_e164=$1', [p]);
@@ -222,7 +235,7 @@ describe('Messages reçus sur le canal QR', () => {
 
     // Même message reçu deux fois : appliqué une seule fois
     sock.emit('messages.upsert', { type: 'notify', messages: [{ key: { remoteJid: jid, id: 'IN1', fromMe: false }, message: { conversation: 'Oui merci' }, messageTimestamp: ts }] });
-    await tick(50);
+    await settle(m, 50);
     expect(await one(env.db, 'SELECT count(*)::int AS n FROM inbound_messages')).toMatchObject({ n: 1 });
 
     // Accusés : livré puis lu
@@ -230,7 +243,7 @@ describe('Messages reçus sur le canal QR', () => {
     const sent = await one(env.db, `SELECT provider_message_id FROM outbound_messages ORDER BY created_at LIMIT 1`);
     sock.emit('messages.update', [{ key: { remoteJid: jid, id: sent.provider_message_id, fromMe: true }, update: { status: 3 } }]);
     sock.emit('messages.update', [{ key: { remoteJid: jid, id: sent.provider_message_id, fromMe: true }, update: { status: 4 } }]);
-    await tick(80);
+    await settle(m, 80);
     expect(await one(env.db, 'SELECT status FROM outbound_messages WHERE provider_message_id=$1', [sent.provider_message_id])).toMatchObject({ status: 'READ' });
     expect(outId).toBeTruthy();
   });

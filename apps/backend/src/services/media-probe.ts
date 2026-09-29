@@ -137,13 +137,19 @@ export async function fetchPublicUrl(url: string, maxBytes: number, allowPrivate
   }
   const agent = new Agent({
     connect: {
-      lookup: (hostname, options, cb) => {
-        dns.lookup(hostname, { ...options, all: false }, (err, address, family) => {
-          if (err) return cb(err, '', 0);
-          if (!allowPrivate && isPrivateIp(String(address))) return cb(new Error('Adresse privée refusée'), '', 0);
-          cb(null, address as string, family as number);
+      // Node ≥ 20 (autoSelectFamily) appelle lookup avec { all: true } et attend alors un tableau
+      // d'adresses : on résout toujours toutes les adresses, on refuse si l'une est privée (SSRF),
+      // puis on répond au format demandé.
+      lookup: ((hostname: string, options: dns.LookupOptions, cb: (...args: any[]) => void) => {
+        dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+          if (err) return cb(err);
+          const list = addresses as dns.LookupAddress[];
+          if (list.length === 0) return cb(new Error('Nom de domaine introuvable'));
+          if (!allowPrivate && list.some((a) => isPrivateIp(a.address))) return cb(new Error('Adresse privée refusée'));
+          if (options?.all) cb(null, list);
+          else cb(null, list[0]!.address, list[0]!.family);
         });
-      },
+      }) as any,
     },
   });
   const controller = new AbortController();

@@ -34,7 +34,8 @@
 | `outbound_messages` | cycle de vie : SUBMITTING → ACCEPTED → SENT → DELIVERED → READ / FAILED |
 | `inbound_messages`, `message_status_events` | événements entrants dédoublonnés |
 | `webhook_events` | chaque webhook brut, stocké durablement (anti-doublon par hash/ID) |
-| `media_assets` | audios / images vérifiés (upload S3 ou URL publique) |
+| `media_assets` | audios / images vérifiés (upload S3, upload en base ou URL publique) |
+| `media_blobs` | contenu des fichiers importés quand S3 n’est pas configuré (servis via URL signée `/files/…`) |
 | `queue_jobs` | trace des jobs programmés (diagnostic) |
 | `provider_logs` | journal technique des appels HTTP (sans secrets) |
 | `audit_logs` | actions de l’utilisateur et du système |

@@ -25,7 +25,7 @@ export async function createProductionContext(config: AppConfig = loadConfig()) 
     log,
     secrets,
     clock: systemClock,
-    storage: createStorage(config),
+    storage: createStorage(config, db),
     rateLimiter: new RedisRateLimiter(redis, config.PROVIDER_MAX_MESSAGES_PER_SECOND, systemClock),
     scheduler,
     ffmpegAvailable: await ffmpegAvailable(),

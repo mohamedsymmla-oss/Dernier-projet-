@@ -102,17 +102,28 @@ Future<Map<String, dynamic>?> pickNewMedia(BuildContext context, {required Strin
       return Map<String, dynamic>.from(await api.post('/media/url', {'kind': kind, 'url': url}) as Map);
     });
   }
-  final file = await FilePicker.pickFile(
-    type: FileType.custom,
-    allowedExtensions: kind == 'audio' ? ['mp3', 'ogg', 'opus', 'm4a', 'aac', 'amr'] : ['jpg', 'jpeg', 'png'],
-  );
+  // Audio : Android ne reconnaît pas toujours l'extension .opus (fichier grisé avec un filtre) ;
+  // on ouvre donc tous les fichiers, on vérifie l'extension ici, puis le serveur vérifie le contenu réel.
+  final file = kind == 'audio'
+      ? await FilePicker.pickFile(type: FileType.any)
+      : await FilePicker.pickFile(type: FileType.custom, allowedExtensions: ['jpg', 'jpeg', 'png']);
   if (file == null || !context.mounted) return null;
+  if (kind == 'audio') {
+    final ext = file.name.contains('.') ? file.name.split('.').last.toLowerCase() : '';
+    if (!_audioExtensions.contains(ext)) {
+      await showError(context, 'Format audio non pris en charge (.$ext). Formats acceptés : ${_audioExtensions.join(', ')}',
+          title: 'Média refusé');
+      return null;
+    }
+  }
   return _withProgress(context, 'Import et vérification du fichier…', () async {
     final bytes = await file.readAsBytes();
     return Map<String, dynamic>.from(
         await api.upload('/media/upload', bytes: bytes, filename: file.name, fields: {'kind': kind}) as Map);
   });
 }
+
+const _audioExtensions = ['mp3', 'ogg', 'opus', 'm4a', 'aac', 'amr'];
 
 Future<T?> _withProgress<T>(BuildContext context, String label, Future<T> Function() fn) async {
   showDialog<void>(

@@ -15,6 +15,7 @@ import { mediaRoutes } from './routes/media.js';
 import { miscRoutes } from './routes/misc.js';
 import { qrRoutes } from './routes/qr.js';
 import { webhookRoutes } from './routes/webhooks.js';
+import { publicFileRoutes } from './routes/files.js';
 
 export async function buildApp(ctx: AppContext) {
   const app = Fastify({
@@ -72,6 +73,9 @@ export async function buildApp(ctx: AppContext) {
   });
   await app.register(async (pub) => {
     await authRoutes(pub, ctx);
+  });
+  await app.register(async (pub) => {
+    await publicFileRoutes(pub, ctx);
   });
   await app.register(async (priv) => {
     priv.addHook('preHandler', authGuard(ctx));
