@@ -107,7 +107,10 @@ Cloudflare R2 : créez un bucket et une clé API R2, puis :
 `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`.
 Le fournisseur WhatsApp reçoit une URL pré-signée temporaire (ou `S3_PUBLIC_BASE_URL` si le bucket est public).
 
-Sans S3 : l’import de fichiers affiche « À configurer », les **URL publiques** fonctionnent toujours.
+Sans S3 : les fichiers importés depuis le téléphone (MP3, OGG, **.opus**, M4A, AAC, AMR, JPEG, PNG) sont
+enregistrés dans **PostgreSQL** (table `media_blobs`, persistante) après la même vérification du contenu réel.
+Le serveur les sert lui-même au fournisseur via une URL signée à durée limitée (`/files/…?exp=…&sig=…`,
+nécessite `PUBLIC_BACKEND_URL`). Les **URL publiques** restent utilisables. Pour de gros volumes, préférez S3/R2.
 Chaque média est vérifié avant acceptation : type réel (MIME), extension, taille, durée audio, accessibilité
 de l’URL, formats acceptés par le fournisseur.
 
